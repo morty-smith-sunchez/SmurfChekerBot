@@ -97,12 +97,13 @@ async def main() -> None:
             return
 
         report = res.html if isinstance(res, AnalyzeResult) else str(res)
-        png = res.card_png if isinstance(res, AnalyzeResult) else None
-        if png:
+        pngs = res.card_pngs if isinstance(res, AnalyzeResult) else ()
+        if pngs:
             await status.delete()
+            files = [io.BytesIO(p) for p in pngs]
             await event.client.send_file(
                 event.chat_id,
-                file=io.BytesIO(png),
+                file=files,
                 caption="SmurfChekBot — отчёт на изображении.",
             )
         else:

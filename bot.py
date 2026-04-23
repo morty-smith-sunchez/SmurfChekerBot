@@ -330,7 +330,7 @@ async def analyze_player(pid: ParsedPlayerId) -> AnalyzeResult:
                     steam_parts.append(f"created: {created}")
                 lines.append(f"- Steam: {', '.join(steam_parts) if steam_parts else 'нет данных'}")
             lines.append("Попробуйте ещё раз через минуту или с VPN/другой сетью.")
-            return AnalyzeResult(html="\n".join(lines), card_png=None)
+            return AnalyzeResult(html="\n".join(lines), card_pngs=())
 
         player = player_r
         matches90 = m90_r if isinstance(m90_r, list) else []
@@ -522,18 +522,20 @@ async def analyze_player(pid: ParsedPlayerId) -> AnalyzeResult:
             except Exception:
                 avatar_bytes = None
 
-        card_png = render_analyze_card(
-            html_lines=lines,
-            nickname=str(title).strip() if title else None,
-            account_id=pid.account_id,
-            steamid64=pid.steamid64,
-            steam_level=steam_level,
-            steam_created=_fmt_ts(steam_profile.timecreated) if steam_profile and steam_profile.timecreated else None,
-            rank_tier=player.rank_tier if isinstance(player.rank_tier, int) else None,
-            leaderboard_rank=player.leaderboard_rank if isinstance(player.leaderboard_rank, int) else None,
-            avatar_png=avatar_bytes,
+        card_pngs = tuple(
+            render_analyze_card(
+                html_lines=lines,
+                nickname=str(title).strip() if title else None,
+                account_id=pid.account_id,
+                steamid64=pid.steamid64,
+                steam_level=steam_level,
+                steam_created=_fmt_ts(steam_profile.timecreated) if steam_profile and steam_profile.timecreated else None,
+                rank_tier=player.rank_tier if isinstance(player.rank_tier, int) else None,
+                leaderboard_rank=player.leaderboard_rank if isinstance(player.leaderboard_rank, int) else None,
+                avatar_png=avatar_bytes,
+            )
         )
-        return AnalyzeResult(html=report_html, card_png=card_png)
+        return AnalyzeResult(html=report_html, card_pngs=card_pngs)
     finally:
         await od.aclose()
         if steam is not None:
@@ -846,14 +848,17 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
             ]
         ]
     )
-    if res.card_png:
+    if res.card_pngs:
         await msg.delete()
-        await message.answer_photo(
-            photo=BufferedInputFile(res.card_png, filename="smurfcheck_report.png"),
-            caption="<b>SmurfChekBot</b> — отчёт на изображении.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
-        )
+        n = len(res.card_pngs)
+        for i, png in enumerate(res.card_pngs):
+            last = i == n - 1
+            await message.answer_photo(
+                photo=BufferedInputFile(png, filename=f"smurfcheck_report_{i + 1}.png"),
+                caption="<b>SmurfChekBot</b> — отчёт на изображении." if last else None,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard if last else None,
+            )
     else:
         await msg.edit_text(
             report,
