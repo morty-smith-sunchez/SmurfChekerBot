@@ -333,6 +333,7 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
             matches30=p30.matches,
         )
         smurf_score = min(1.0, susp.smurf_score + adaptive_bonus)
+        boost_score = susp.boost_score
 
         # --- render ---
         title = None
@@ -410,6 +411,10 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
         if reasons_smurf:
             for r in reasons_smurf[:5]:
                 lines.append(f"  · {r}")
+        lines.append(f"- Буст: <b>{_score_label(boost_score)}</b> ({boost_score:.2f})")
+        if susp.reasons_boost:
+            for r in susp.reasons_boost[:4]:
+                lines.append(f"  · {r}")
         lines.append(f"- Куплен/передан: <b>{_score_label(susp.bought_score)}</b> ({susp.bought_score:.2f})")
         if susp.reasons_bought:
             for r in susp.reasons_bought[:4]:
@@ -479,7 +484,9 @@ async def build_last_matches_report(account_id: int) -> str:
     return "\n".join(lines)
 
 
-async def _analyze_account_smurf_score(od: OpenDotaClient, account_id: int, *, now_ts: int) -> tuple[float, str, int]:
+async def _analyze_account_smurf_score(
+    od: OpenDotaClient, account_id: int, *, now_ts: int
+) -> tuple[float, float, float, int]:
     player = await od.get_player(account_id)
     matches90 = await od.get_matches(account_id, days=90, limit=500)
     matches365 = await od.get_matches(account_id, days=365, limit=500)
@@ -532,7 +539,9 @@ async def _analyze_account_smurf_score(od: OpenDotaClient, account_id: int, *, n
         matches30=p30.matches,
     )
     smurf_score = min(1.0, susp.smurf_score + adaptive_bonus)
-    return smurf_score, _score_label(smurf_score), p30.matches
+    boost_score = susp.boost_score
+    bought_score = susp.bought_score
+    return smurf_score, boost_score, bought_score, p30.matches
 
 
 async def cmd_start(message: Message, state: FSMContext) -> None:
@@ -668,7 +677,7 @@ async def on_suspicious_match_callback(callback: CallbackQuery) -> None:
             raise RuntimeError("empty players")
 
         now_ts = int(time())
-        suspicious: list[tuple[float, int, str, str, int]] = []
+        suspicious: list[tuple[float, int, str, str, int, float, float, float]] = []
         for p in players:
             if not isinstance(p, dict):
                 continue
@@ -680,11 +689,16 @@ async def on_suspicious_match_callback(callback: CallbackQuery) -> None:
             hero_id = p.get("hero_id")
             hero_name = f"Hero#{hero_id}" if isinstance(hero_id, int) else "Unknown hero"
             try:
-                smurf_score, label, matches30 = await _analyze_account_smurf_score(od, account_id, now_ts=now_ts)
+                smurf_score, boost_score, bought_score, matches30 = await _analyze_account_smurf_score(
+                    od, account_id, now_ts=now_ts
+                )
             except Exception:
                 continue
-            if smurf_score >= 0.45:
-                suspicious.append((smurf_score, account_id, name, hero_name, matches30))
+            primary = max(smurf_score, boost_score, bought_score)
+            if primary >= 0.45:
+                suspicious.append(
+                    (primary, account_id, name, hero_name, matches30, smurf_score, boost_score, bought_score)
+                )
     except Exception:
         if callback.message is not None:
             await callback.message.answer(
@@ -708,11 +722,13 @@ async def on_suspicious_match_callback(callback: CallbackQuery) -> None:
 
     suspicious.sort(key=lambda x: x[0], reverse=True)
     lines: list[str] = [f"<b>Подозрительные аккаунты в матче {match_id}</b>"]
-    for score, account_id, name, hero_name, matches30 in suspicious[:10]:
+    for _primary, account_id, name, hero_name, matches30, smurf_score, boost_score, bought_score in suspicious[:10]:
         lines.append(
             f"\n- <b>{name}</b> (<code>{account_id}</code>)\n"
             f"  герой: {hero_name}\n"
-            f"  смурф-скор: <b>{_score_label(score)}</b> ({score:.2f})\n"
+            f"  смурф: <b>{_score_label(smurf_score)}</b> ({smurf_score:.2f}), "
+            f"буст: <b>{_score_label(boost_score)}</b> ({boost_score:.2f}), "
+            f"куплен: <b>{_score_label(bought_score)}</b> ({bought_score:.2f})\n"
             f"  матчей за 30д: {matches30}"
         )
     await callback.message.answer("\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)

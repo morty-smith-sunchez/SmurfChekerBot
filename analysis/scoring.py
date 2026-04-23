@@ -10,8 +10,10 @@ from .metrics import PeriodStats, jaccard_top_heroes
 class SuspicionScore:
     smurf_score: float
     bought_score: float
+    boost_score: float
     reasons_smurf: list[str]
     reasons_bought: list[str]
+    reasons_boost: list[str]
 
 
 def clamp01(x: float) -> float:
@@ -127,6 +129,12 @@ def _best_wr_window(matches: list[dict[str, Any]], *, window: int = 20) -> tuple
     return best, cnt
 
 
+def _dominant_lane_role(lane_roles: dict[int, int]) -> int | None:
+    if not lane_roles:
+        return None
+    return max(lane_roles.items(), key=lambda kv: kv[1])[0]
+
+
 def _perf_thresholds(rank_tier: int | None) -> tuple[float, float, float]:
     # Rough high-percentile bars by medal group; tuned as heuristics.
     if isinstance(rank_tier, int):
@@ -156,8 +164,10 @@ def score_suspicion(
 
     smurf = 0.0
     bought = 0.0
+    boost = 0.0
     rs: list[str] = []
     rb: list[str] = []
+    r_boost: list[str] = []
 
     hero_similarity = None
     if p_before is not None:
@@ -199,7 +209,7 @@ def score_suspicion(
             f"WR30 {p30.winrate:.1f}%, KDA {avg_kda30:.2f}"
         )
 
-    # 2) Возврат после паузы + новые герои + много побед = смурф.
+    # 2) Возврат после паузы + новые герои + много побед = смурф или буст (объём матчей).
     if (
         inactivity_days is not None
         and inactivity_days >= 21
@@ -208,11 +218,18 @@ def score_suspicion(
         and hero_similarity is not None
         and hero_similarity <= 0.25
     ):
-        smurf += 0.5
-        rs.append(
-            f"После паузы ~{inactivity_days:.0f}д игрок вернулся с другим пулом героев "
-            f"и высоким винрейтом за 30д ({p30.winrate:.1f}%)"
-        )
+        if total_games >= 5000:
+            boost += 0.55
+            r_boost.append(
+                f"После паузы ~{inactivity_days:.0f}д сменился пул героев и высокий WR30 ({p30.winrate:.1f}%) "
+                f"при {total_games} матчах на аккаунте — чаще буст/MMR-подъём, чем смурф"
+            )
+        else:
+            smurf += 0.5
+            rs.append(
+                f"После паузы ~{inactivity_days:.0f}д игрок вернулся с другим пулом героев "
+                f"и высоким винрейтом за 30д ({p30.winrate:.1f}%)"
+            )
 
     # 3) Возврат после паузы + новые герои + много поражений = куплен/передан.
     if (
@@ -239,10 +256,21 @@ def score_suspicion(
 
     # 5) WR-спайки: окна 20+ матчей с 75-95% на фоне стабильного базового WR.
     if p90.matches >= 40 and 47.0 <= p90.winrate <= 55.0 and spike_windows >= 1:
-        smurf += 0.20
         bought += 0.20
-        rs.append(f"Есть WR-спайк: до {best_window_wr:.1f}% на окне 20 матчей при базовом WR90 {p90.winrate:.1f}%")
         rb.append(f"Есть WR-спайк: до {best_window_wr:.1f}% на окне 20 матчей при базовом WR90 {p90.winrate:.1f}%")
+        if total_games >= 5000:
+            boost += 0.18
+            r_boost.append(
+                f"WR-спайк при большом объёме матчей ({total_games}): до {best_window_wr:.1f}% на окне 20 — "
+                f"типичнее для буста, чем для смурфа"
+            )
+            smurf += 0.05
+            rs.append(
+                f"WR-спайк (слабый сигнал смурфа при {total_games} матчах): до {best_window_wr:.1f}% при WR90 {p90.winrate:.1f}%"
+            )
+        else:
+            smurf += 0.20
+            rs.append(f"Есть WR-спайк: до {best_window_wr:.1f}% на окне 20 матчей при базовом WR90 {p90.winrate:.1f}%")
 
     # 5b) Устойчиво высокий WR на большой выборке + высокий KDA.
     if (
@@ -269,17 +297,30 @@ def score_suspicion(
             or (gpm_rows30 < 10 and xpm_rows30 < 10 and avg_kda30 >= (kda_t + 0.6))
         )
     ):
-        smurf += 0.25
-        if gpm_rows30 >= 10 and xpm_rows30 >= 10:
-            rs.append(
-                f"Перформанс выше бенчмарка ранга: KDA {avg_kda30:.2f} (>{kda_t:.1f}), "
-                f"GPM {avg_gpm30:.0f} (>{gpm_t:.0f}), XPM {avg_xpm30:.0f} (>{xpm_t:.0f})"
-            )
+        if total_games >= 5000:
+            boost += 0.30
+            if gpm_rows30 >= 10 and xpm_rows30 >= 10:
+                r_boost.append(
+                    f"Сильный перформанс на объёмном аккаунте ({total_games} матчей): "
+                    f"KDA {avg_kda30:.2f}, GPM {avg_gpm30:.0f}, XPM {avg_xpm30:.0f} — чаще буст/подъём, чем смурф"
+                )
+            else:
+                r_boost.append(
+                    f"Сильный перформанс на объёмном аккаунте ({total_games} матчей): KDA {avg_kda30:.2f} — "
+                    f"чаще буст/подъём, чем смурф"
+                )
         else:
-            rs.append(
-                f"Перформанс выше бенчмарка ранга (по доступным данным): "
-                f"KDA {avg_kda30:.2f} (>{kda_t + 0.6:.1f})"
-            )
+            smurf += 0.25
+            if gpm_rows30 >= 10 and xpm_rows30 >= 10:
+                rs.append(
+                    f"Перформанс выше бенчмарка ранга: KDA {avg_kda30:.2f} (>{kda_t:.1f}), "
+                    f"GPM {avg_gpm30:.0f} (>{gpm_t:.0f}), XPM {avg_xpm30:.0f} (>{xpm_t:.0f})"
+                )
+            else:
+                rs.append(
+                    f"Перформанс выше бенчмарка ранга (по доступным данным): "
+                    f"KDA {avg_kda30:.2f} (>{kda_t + 0.6:.1f})"
+                )
 
     # 7) Новые/«воскрешенные» герои с высоким WR.
     if p_before is not None and p30.matches >= 15:
@@ -290,11 +331,18 @@ def score_suspicion(
             if games >= 4 and 70.0 <= wr <= 85.0 and hid not in prev_hero_ids
         ]
         if hero_similarity is not None and hero_similarity <= 0.35 and len(hot_new_heroes) >= 2:
-            smurf += 0.25
-            rs.append(
-                f"Новый пул героев с резким аплифтом: {len(hot_new_heroes)} героя(ев) "
-                f"в диапазоне WR 70-85%"
-            )
+            if total_games >= 5000:
+                boost += 0.28
+                r_boost.append(
+                    f"Резкая смена пула героев с аплифтом на объёмном аккаунте ({total_games} матчей): "
+                    f"{len(hot_new_heroes)} героя(ев) с WR 70-85% — типичный паттерн буста"
+                )
+            else:
+                smurf += 0.25
+                rs.append(
+                    f"Новый пул героев с резким аплифтом: {len(hot_new_heroes)} героя(ев) "
+                    f"в диапазоне WR 70-85%"
+                )
 
     # 8) Возраст аккаунта vs ранг (ускоренный прогресс).
     if account_age_days is not None and rank_tier is not None:
@@ -306,6 +354,64 @@ def score_suspicion(
                 f"возраст ~{account_age_days:.0f} дней, матчей {total_games}"
             )
 
+    # 9) Буст: крупный объём матчей + сильный WR за 30/90д; смена героев и ролей.
+    dominant_before = _dominant_lane_role(p_before.lane_roles) if p_before is not None else None
+    dominant30 = _dominant_lane_role(p30.lane_roles)
+    lane_shift = (
+        dominant_before is not None
+        and dominant30 is not None
+        and dominant_before != dominant30
+        and p_before is not None
+        and p_before.matches >= 10
+        and p30.matches >= 10
+    )
+
+    if (
+        total_games >= 6000
+        and p30.matches >= 15
+        and p30.winrate >= 58.0
+        and p90.matches >= 20
+        and p90.winrate >= 54.0
+    ):
+        boost += 0.50
+        r_boost.append(
+            f"6000+ матчей ({total_games}) при высоком WR30/90д ({p30.winrate:.1f}% / {p90.winrate:.1f}%) — "
+            f"при таком объёме вероятность буста выше, чем смурф-аккаунта"
+        )
+    elif (
+        total_games >= 5000
+        and p30.matches >= 15
+        and p30.winrate >= 56.0
+        and p90.matches >= 18
+        and p90.winrate >= 52.0
+    ):
+        boost += 0.35
+        r_boost.append(
+            f"Объёмный аккаунт ({total_games} матчей) с заметным WR30/90д "
+            f"({p30.winrate:.1f}% / {p90.winrate:.1f}%) — сигнал буста"
+        )
+
+    if (
+        total_games >= 4000
+        and p_before is not None
+        and p_before.matches >= 12
+        and p30.matches >= 12
+        and hero_similarity is not None
+        and hero_similarity <= 0.30
+        and p30.winrate >= 55.0
+    ):
+        boost += 0.22
+        r_boost.append(
+            f"Резкая смена пула героев (схожесть топ-5: {hero_similarity:.2f}) при {total_games} матчах и WR30 {p30.winrate:.1f}%"
+        )
+
+    if lane_shift and total_games >= 4000 and p30.winrate >= 55.0 and p30.matches >= 10:
+        boost += 0.20
+        r_boost.append(
+            f"Смена основной роли (lane_role {dominant_before} → {dominant30}) при WR30 {p30.winrate:.1f}% "
+            f"и {total_games} матчах — сигнал буста"
+        )
+
     # Доп. сигнал покупки: сильная просадка относительно предыдущего периода.
     if p_before is not None and p_before.matches >= 15 and p30.matches >= 15:
         drop = p_before.winrate - p30.winrate
@@ -316,7 +422,9 @@ def score_suspicion(
     return SuspicionScore(
         smurf_score=clamp01(smurf),
         bought_score=clamp01(bought),
+        boost_score=clamp01(boost),
         reasons_smurf=rs,
         reasons_bought=rb,
+        reasons_boost=r_boost,
     )
 
