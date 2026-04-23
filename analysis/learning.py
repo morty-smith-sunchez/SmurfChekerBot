@@ -11,6 +11,22 @@ SMURF_FILE = DATA_DIR / "confirmed_smurfs.json"
 
 
 @dataclass(frozen=True)
+class AdaptiveCalibration:
+    """Пороги адаптивного бонуса к смурф-скору из медиан подтверждённых кейсов."""
+
+    n_samples: int
+    med_games: int
+    med_wr30: float
+    med_wr90: float
+    med_kda: float
+    games_limit: int
+    wr30_bar: float
+    wr90_bar: float
+    kda_bar: float
+    bonus_cap: float
+
+
+@dataclass(frozen=True)
 class SmurfSample:
     account_id: int
     total_games: int
@@ -102,6 +118,47 @@ def register_confirmed_smurf(sample: SmurfSample) -> int:
     return len(merged)
 
 
+def remove_confirmed_smurf(account_id: int) -> tuple[bool, int]:
+    """Удалить кейс из калибровки. Возвращает (был ли удалён, новое количество)."""
+    samples = load_confirmed_smurfs()
+    new_list = [s for s in samples if s.account_id != account_id]
+    if len(new_list) == len(samples):
+        return False, len(samples)
+    save_confirmed_smurfs(new_list)
+    return True, len(new_list)
+
+
+def calibration_from_samples(samples: list[SmurfSample]) -> AdaptiveCalibration | None:
+    n = len(samples)
+    if n < 2:
+        return None
+    med_games = sorted(s.total_games for s in samples)[n // 2]
+    med_wr30 = sorted(s.wr30 for s in samples)[n // 2]
+    med_wr90 = sorted(s.wr90 for s in samples)[n // 2]
+    med_kda = sorted(s.kda30 for s in samples)[n // 2]
+    games_limit = max(120, int(med_games * 1.8))
+    wr30_bar = max(55.0, med_wr30 - 6.0)
+    wr90_bar = max(56.0, med_wr90 - 7.0)
+    kda_bar = max(3.6, med_kda - 1.2)
+    bonus_cap = min(0.35, 0.08 * float(n))
+    return AdaptiveCalibration(
+        n_samples=n,
+        med_games=int(med_games),
+        med_wr30=float(med_wr30),
+        med_wr90=float(med_wr90),
+        med_kda=float(med_kda),
+        games_limit=games_limit,
+        wr30_bar=wr30_bar,
+        wr90_bar=wr90_bar,
+        kda_bar=kda_bar,
+        bonus_cap=bonus_cap,
+    )
+
+
+def get_adaptive_calibration() -> AdaptiveCalibration | None:
+    return calibration_from_samples(load_confirmed_smurfs())
+
+
 def adaptive_smurf_bonus(
     *,
     total_games: int,
@@ -111,30 +168,21 @@ def adaptive_smurf_bonus(
     matches30: int,
 ) -> tuple[float, str | None]:
     samples = load_confirmed_smurfs()
-    if len(samples) < 2:
+    cal = calibration_from_samples(samples)
+    if cal is None:
         return 0.0, None
-
-    med_games = sorted(s.total_games for s in samples)[len(samples) // 2]
-    med_wr30 = sorted(s.wr30 for s in samples)[len(samples) // 2]
-    med_wr90 = sorted(s.wr90 for s in samples)[len(samples) // 2]
-    med_kda = sorted(s.kda30 for s in samples)[len(samples) // 2]
-
-    games_limit = max(120, int(med_games * 1.8))
-    wr30_bar = max(55.0, med_wr30 - 6.0)
-    wr90_bar = max(56.0, med_wr90 - 7.0)
-    kda_bar = max(3.6, med_kda - 1.2)
 
     if (
         matches30 >= 15
-        and total_games <= games_limit
-        and wr30 >= wr30_bar
-        and wr90 >= wr90_bar
-        and kda30 >= kda_bar
+        and total_games <= cal.games_limit
+        and wr30 >= cal.wr30_bar
+        and wr90 >= cal.wr90_bar
+        and kda30 >= cal.kda_bar
     ):
-        bonus = min(0.35, 0.08 * float(len(samples)))
+        bonus = cal.bonus_cap
         reason = (
             f"Адаптивный сигнал: профиль похож на подтвержденные смурфы "
-            f"(база: {len(samples)} кейсов)"
+            f"(база: {cal.n_samples} кейсов)"
         )
         return bonus, reason
     return 0.0, None

@@ -18,6 +18,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
+    BotCommand,
     BufferedInputFile,
     CallbackQuery,
     FSInputFile,
@@ -29,8 +30,23 @@ from aiogram.types import (
     User,
 )
 
-from analytics.store import fetch_recent_messages, fetch_stats, init_db, record_message
-from analysis.learning import SmurfSample, adaptive_smurf_bonus, avg_kda, register_confirmed_smurf
+from analytics.store import (
+    fetch_recent_messages,
+    fetch_stats,
+    init_db,
+    record_message,
+    sponsored_promo_eligible,
+    sponsored_promo_mark_shown,
+)
+from analysis.learning import (
+    SmurfSample,
+    adaptive_smurf_bonus,
+    avg_kda,
+    get_adaptive_calibration,
+    load_confirmed_smurfs,
+    register_confirmed_smurf,
+    remove_confirmed_smurf,
+)
 from analysis.metrics import PeriodStats, compute_period_stats
 from analysis.scoring import score_suspicion
 from config import SETTINGS
@@ -75,16 +91,47 @@ class UserInputState(StatesGroup):
     waiting_match_target = State()
 
 
-MAIN_MENU = ReplyKeyboardMarkup(
-    keyboard=[
+def main_menu_reply_markup() -> ReplyKeyboardMarkup:
+    ch = (SETTINGS.promo_channel_url or "").strip()
+    label = (SETTINGS.promo_channel_button_text or "Наш канал").strip() or "Наш канал"
+    rows: list[list[KeyboardButton]] = [
         [KeyboardButton(text=BTN_ANALYZE)],
         [KeyboardButton(text=BTN_MATCH)],
         [KeyboardButton(text=BTN_CONFIRM_SMURF)],
         [KeyboardButton(text=BTN_DONATE)],
-        [KeyboardButton(text=BTN_CANCEL)],
-    ],
-    resize_keyboard=True,
-)
+    ]
+    if ch:
+        rows.append([KeyboardButton(text=label, url=ch)])
+    rows.append([KeyboardButton(text=BTN_CANCEL)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def _inline_with_channel_row(kb: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
+    ch = (SETTINGS.promo_channel_url or "").strip()
+    if not ch:
+        return kb
+    label = (SETTINGS.promo_channel_button_text or "Наш канал").strip() or "Наш канал"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[*kb.inline_keyboard, [InlineKeyboardButton(text=label, url=ch)]]
+    )
+
+
+async def maybe_sponsored_after_analyze(message: Message) -> None:
+    block = (SETTINGS.promo_sponsored_after_analyze_html or "").strip()
+    if not block:
+        return
+    user = message.from_user
+    if not user:
+        return
+    ok = await asyncio.to_thread(
+        sponsored_promo_eligible,
+        user.id,
+        SETTINGS.promo_sponsored_cooldown_seconds,
+    )
+    if not ok:
+        return
+    await message.answer(block, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    await asyncio.to_thread(sponsored_promo_mark_shown, user.id)
 
 
 def _admin_ids() -> set[int]:
@@ -811,7 +858,20 @@ async def reply_donation_details(message: Message) -> None:
         build_donation_message_html(),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
-        reply_markup=MAIN_MENU,
+        reply_markup=main_menu_reply_markup(),
+    )
+
+
+async def cmd_privacy(message: Message) -> None:
+    await message.answer(
+        "<b>Конфиденциальность</b>\n\n"
+        "Бот запрашивает у публичных API (OpenDota и др.) статистику Dota 2 по тому id или ссылке, "
+        "которые вы присылаете. Пароль Steam бот не запрашивает и в аккаунт не заходит.\n\n"
+        "Сообщения в чате с ботом могут записываться в локальную базу на стороне владельца бота "
+        "(аналитика и модерация). Это не публикуется в открытый доступ.\n\n"
+        "Оценки «смурф / буст / купленный аккаунт» — эвристики для ориентира, не официальный вердикт Valve.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_menu_reply_markup(),
     )
 
 
@@ -836,6 +896,17 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         "<code>/match https://www.opendota.com/matches/7890123456</code>\n\n"
         "Или просто используйте кнопки ниже 👇",
     ]
+    promo_url = (SETTINGS.promo_channel_url or "").strip()
+    custom_promo = (SETTINGS.promo_start_line_html or "").strip()
+    if custom_promo:
+        parts.append("")
+        parts.append(custom_promo)
+    elif promo_url:
+        safe_u = html.escape(promo_url, quote=True)
+        parts.append("")
+        parts.append(f"Новости и обновления — в <a href=\"{safe_u}\">telegram-канале</a>.")
+    parts.append("")
+    parts.append("<code>/privacy</code> — что бот делает с данными.")
     card = (SETTINGS.donation_card or "").strip()
     if card or SETTINGS.donation_text or SETTINGS.donation_url:
         parts.append("")
@@ -846,7 +917,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await message.answer(
         "\n".join(parts),
         parse_mode=ParseMode.HTML,
-        reply_markup=MAIN_MENU,
+        reply_markup=main_menu_reply_markup(),
     )
 
 
@@ -892,15 +963,17 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
         return
 
     report = res.html
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Подробно: 3 последние игры",
-                    callback_data=f"{CB_LAST_MATCHES_PREFIX}{pid.account_id}",
-                )
+    keyboard = _inline_with_channel_row(
+        InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Подробно: 3 последние игры",
+                        callback_data=f"{CB_LAST_MATCHES_PREFIX}{pid.account_id}",
+                    )
+                ]
             ]
-        ]
+        )
     )
     if res.card_pngs:
         await msg.delete()
@@ -920,6 +993,7 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
             disable_web_page_preview=True,
             reply_markup=keyboard,
         )
+    await maybe_sponsored_after_analyze(message)
 
 
 async def cmd_match(message: Message, command: CommandObject) -> None:
@@ -961,15 +1035,17 @@ async def cmd_match(message: Message, command: CommandObject) -> None:
         )
         return
 
-    sus_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Подозрительные аккаунты в этом матче",
-                    callback_data=f"{CB_SUS_MATCH_PREFIX}{match_id}",
-                )
+    sus_keyboard = _inline_with_channel_row(
+        InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Подозрительные аккаунты в этом матче",
+                        callback_data=f"{CB_SUS_MATCH_PREFIX}{match_id}",
+                    )
+                ]
             ]
-        ]
+        )
     )
     await msg.edit_text(
         report,
@@ -1026,7 +1102,7 @@ async def on_last_matches_callback(callback: CallbackQuery) -> None:
             await callback.message.answer(
                 "Выбери матч для проверки участников:",
                 parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+                reply_markup=_inline_with_channel_row(InlineKeyboardMarkup(inline_keyboard=buttons)),
             )
 
 
@@ -1189,7 +1265,7 @@ async def on_analyze_button(message: Message, state: FSMContext) -> None:
     await message.answer(
         "Пришли steamid64, account_id или ссылку на профиль Dotabuff, OpenDota или Steam.",
         parse_mode=ParseMode.HTML,
-        reply_markup=MAIN_MENU,
+        reply_markup=main_menu_reply_markup(),
     )
 
 
@@ -1198,7 +1274,7 @@ async def on_confirm_button(message: Message, state: FSMContext) -> None:
     await message.answer(
         "Пришли steamid64, account_id, ссылку на Dotabuff/OpenDota или Steam-профиль, который подтверждаешь как смурф.",
         parse_mode=ParseMode.HTML,
-        reply_markup=MAIN_MENU,
+        reply_markup=main_menu_reply_markup(),
     )
 
 
@@ -1207,7 +1283,7 @@ async def on_match_button(message: Message, state: FSMContext) -> None:
     await message.answer(
         "Пришли <b>match_id</b> или ссылку на матч (страница матча на OpenDota / Dotabuff).",
         parse_mode=ParseMode.HTML,
-        reply_markup=MAIN_MENU,
+        reply_markup=main_menu_reply_markup(),
     )
 
 
@@ -1220,7 +1296,7 @@ async def on_cancel_button(message: Message, state: FSMContext) -> None:
     await message.answer(
         "Действие отменено. Выбери следующий шаг кнопками ниже.",
         parse_mode=ParseMode.HTML,
-        reply_markup=MAIN_MENU,
+        reply_markup=main_menu_reply_markup(),
     )
 
 
@@ -1272,9 +1348,122 @@ async def cmd_admin_stats(message: Message) -> None:
         f"Писали за последние 7 дней: <b>{stats['active_users_7d']}</b>\n"
         f"Всего учтённых сообщений (сумма): <b>{stats['total_messages']}</b>\n"
         f"Записей в логе за 24 часа: <b>{stats['logged_messages_24h']}</b>\n\n"
-        "<code>/admin_recent</code> — последние тексты пользователей.",
+        "<code>/admin_recent</code> — последние тексты пользователей.\n"
+        "<code>/admin_calib</code> — калибровка эвристики смурфа.",
         parse_mode=ParseMode.HTML,
     )
+
+
+async def cmd_admin_calib(message: Message) -> None:
+    if not message.from_user or not _is_admin(message.from_user):
+        await message.answer(
+            "Нет доступа к админ-командам. Проверьте <code>ADMIN_USER_IDS</code> / <code>ADMIN_USERNAMES</code> в "
+            "<code>.env</code> и перезапуск бота.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    raw = (message.text or "").strip()
+    parts = raw.split(maxsplit=2)
+    head = parts[0].split("@", 1)[0].lower() if parts else ""
+    if head != "/admin_calib":
+        return
+    sub = (parts[1].split("@", 1)[0].lower() if len(parts) > 1 else "help")
+    arg_tail = parts[2].strip() if len(parts) > 2 else ""
+
+    if sub in ("help", "?", ""):
+        await message.answer(
+            "<b>/admin_calib</b> — калибровка адаптивного бонуса к «смурф»-скору "
+            "(данные из <code>data/confirmed_smurfs.json</code>, пополняется через "
+            "<code>/confirm_smurf_100</code>).\n\n"
+            "<code>/admin_calib summary</code> — медианы и пороги, по которым начисляется бонус\n"
+            "<code>/admin_calib list</code> — список сохранённых кейсов\n"
+            "<code>/admin_calib remove &lt;account_id&gt;</code> — удалить кейс из базы",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if sub == "summary":
+        try:
+            cal = await asyncio.to_thread(get_adaptive_calibration)
+            n = len(await asyncio.to_thread(load_confirmed_smurfs))
+        except Exception:
+            logger.exception("admin_calib summary")
+            await message.answer("Ошибка чтения базы калибровки.", parse_mode=ParseMode.HTML)
+            return
+        if cal is None:
+            await message.answer(
+                f"Подтверждённых смурфов в базе: <b>{n}</b>. Для адаптивного бонуса в анализе нужно <b>≥2</b> кейса.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await message.answer(
+            "<b>Калибровка (адаптивный бонус)</b>\n"
+            f"Кейсов: <b>{cal.n_samples}</b>\n\n"
+            "<b>Медианы</b> по подтверждённым:\n"
+            f"• матчей всего: <code>{cal.med_games}</code>\n"
+            f"• WR 30д: <code>{cal.med_wr30:.1f}%</code>\n"
+            f"• WR 90д: <code>{cal.med_wr90:.1f}%</code>\n"
+            f"• KDA 30д: <code>{cal.med_kda:.2f}</code>\n\n"
+            "<b>Пороги</b> (если выполнены все + ≥15 матчей за 30д, даётся бонус до cap):\n"
+            f"• games ≤ <code>{cal.games_limit}</code> (max(120, med_games×1.8))\n"
+            f"• wr30 ≥ <code>{cal.wr30_bar:.1f}%</code> (max(55, med−6))\n"
+            f"• wr90 ≥ <code>{cal.wr90_bar:.1f}%</code> (max(56, med−7))\n"
+            f"• kda30 ≥ <code>{cal.kda_bar:.2f}</code> (max(3.6, med−1.2))\n"
+            f"• бонус cap: <code>{cal.bonus_cap:.2f}</code> (min(0.35, 0.08×N))",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if sub == "list":
+        try:
+            samples = await asyncio.to_thread(load_confirmed_smurfs)
+        except Exception:
+            logger.exception("admin_calib list")
+            await message.answer("Ошибка чтения списка кейсов.", parse_mode=ParseMode.HTML)
+            return
+        if not samples:
+            await message.answer("База подтверждённых смурфов пуста.", parse_mode=ParseMode.HTML)
+            return
+        lines: list[str] = ["<b>Кейсы калибровки</b>"]
+        for s in sorted(samples, key=lambda x: x.account_id):
+            rt = s.rank_tier if s.rank_tier is not None else "—"
+            lines.append(
+                f"<code>{s.account_id}</code> — games {s.total_games}, wr30 {s.wr30:.1f}%, wr90 {s.wr90:.1f}%, "
+                f"kda30 {s.kda30:.2f}, m30 {s.matches30}, tier {rt}"
+            )
+        body = "\n".join(lines)
+        while body:
+            chunk = body[:3800]
+            body = body[3800:]
+            suffix = "\n…" if body else ""
+            await message.answer(chunk + suffix, parse_mode=ParseMode.HTML)
+        return
+
+    if sub == "remove":
+        id_str = arg_tail.split()[0] if arg_tail else ""
+        if not id_str.isdigit():
+            await message.answer(
+                "Укажите: <code>/admin_calib remove &lt;account_id&gt;</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        aid = int(id_str)
+        try:
+            removed, newn = await asyncio.to_thread(remove_confirmed_smurf, aid)
+        except Exception:
+            logger.exception("admin_calib remove")
+            await message.answer("Ошибка записи базы.", parse_mode=ParseMode.HTML)
+            return
+        if not removed:
+            await message.answer(f"Кейса <code>{aid}</code> в базе не было.", parse_mode=ParseMode.HTML)
+            return
+        await message.answer(
+            f"Удалён кейс <code>{aid}</code>. Осталось кейсов: <b>{newn}</b>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    await message.answer("Неизвестная подкоманда. <code>/admin_calib help</code>", parse_mode=ParseMode.HTML)
 
 
 async def cmd_admin_recent(message: Message) -> None:
@@ -1325,32 +1514,34 @@ async def main() -> None:
 
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_donate, Command("donate"))
-    # До FSM: иначе в состоянии «ожидаю id» любой текст (включая /admin_stats) уходит в analyze.
+    dp.message.register(cmd_privacy, Command("privacy"))
+    # До FSM: команды и админка — до состояний «ожидаю текст», иначе /privacy и др. уходят в FSM.
     dp.message.register(cmd_admin_stats, F.text.startswith("/admin_stats"))
     dp.message.register(cmd_admin_recent, F.text.startswith("/admin_recent"))
+    dp.message.register(cmd_admin_calib, F.text.startswith("/admin_calib"))
     dp.message.register(on_cancel_button, F.text == BTN_CANCEL)
     dp.message.register(on_analyze_button, F.text == BTN_ANALYZE)
     dp.message.register(on_match_button, F.text == BTN_MATCH)
     dp.message.register(on_confirm_button, F.text == BTN_CONFIRM_SMURF)
     dp.message.register(on_donate_button, F.text == BTN_DONATE)
-    not_admin_cmd = ~F.text.startswith("/admin")
+    skip_commands_in_fsm = ~F.text.startswith("/")
     dp.message.register(
         on_analyze_target_input,
         UserInputState.waiting_analyze_target,
         F.text,
-        not_admin_cmd,
+        skip_commands_in_fsm,
     )
     dp.message.register(
         on_confirm_target_input,
         UserInputState.waiting_confirm_smurf_target,
         F.text,
-        not_admin_cmd,
+        skip_commands_in_fsm,
     )
     dp.message.register(
         on_match_target_input,
         UserInputState.waiting_match_target,
         F.text,
-        not_admin_cmd,
+        skip_commands_in_fsm,
     )
     dp.message.register(cmd_analyze, Command("analyze"))
     dp.message.register(cmd_analyze, F.text.startswith("/analyze"))
@@ -1360,6 +1551,19 @@ async def main() -> None:
     dp.message.register(cmd_confirm_smurf_100, F.text.startswith("/confirm_smurf_100"))
     dp.callback_query.register(on_last_matches_callback, F.data.startswith(CB_LAST_MATCHES_PREFIX))
     dp.callback_query.register(on_suspicious_match_callback, F.data.startswith(CB_SUS_MATCH_PREFIX))
+
+    try:
+        await bot.set_my_commands(
+            [
+                BotCommand(command="start", description="Справка и меню"),
+                BotCommand(command="analyze", description="Проверить профиль Dota"),
+                BotCommand(command="match", description="Сводка по матчу"),
+                BotCommand(command="donate", description="Поддержать проект"),
+                BotCommand(command="privacy", description="Данные и конфиденциальность"),
+            ]
+        )
+    except Exception:
+        logger.exception("set_my_commands failed")
 
     await dp.start_polling(bot)
 

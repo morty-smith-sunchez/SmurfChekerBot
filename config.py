@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     donation_url: str | None = None
     donation_card: str | None = None
 
+    # Рост: свой канал и опциональная реклама (HTML в значениях — осторожно с тегами)
+    promo_channel_url: str | None = None
+    promo_channel_button_text: str = "Наш канал"
+    # Если задано — показывается в /start вместо авто-строки про канал
+    promo_start_line_html: str | None = None
+    # Отдельное сообщение после успешного /analyze (не чаще чем раз в cooldown на пользователя)
+    promo_sponsored_after_analyze_html: str | None = None
+    promo_sponsored_cooldown_seconds: int = 43_200
+
     # Comma-separated Telegram user ids (digits) — /admin_* и зеркало сообщений
     admin_user_ids: str | None = None
     # Логины без @ (те же /admin_*). Чисто числовые значения здесь тоже считаются user id (если перепутали с ADMIN_USER_IDS)

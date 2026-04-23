@@ -8,6 +8,13 @@ _ROOT = Path(__file__).resolve().parent.parent
 _DATA_DIR = _ROOT / "data"
 _DB_PATH = _DATA_DIR / "analytics.sqlite"
 
+_DDL_PROMO = """
+CREATE TABLE IF NOT EXISTS promo_sponsored_shown (
+    user_id INTEGER PRIMARY KEY,
+    ts INTEGER NOT NULL
+);
+"""
+
 _DDL = """
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
@@ -50,6 +57,37 @@ def _connect() -> sqlite3.Connection:
 def init_db() -> None:
     with _connect() as conn:
         conn.executescript(_DDL)
+        conn.executescript(_DDL_PROMO)
+
+
+def sponsored_promo_eligible(user_id: int, cooldown_s: int) -> bool:
+    """Можно ли показать платное/спонсорское сообщение после анализа."""
+    if cooldown_s <= 0:
+        return True
+    now = int(time.time())
+    with _connect() as conn:
+        conn.executescript(_DDL_PROMO)
+        row = conn.execute(
+            "SELECT ts FROM promo_sponsored_shown WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        if not row:
+            return True
+        return (now - int(row[0])) >= cooldown_s
+
+
+def sponsored_promo_mark_shown(user_id: int) -> None:
+    now = int(time.time())
+    with _connect() as conn:
+        conn.executescript(_DDL_PROMO)
+        conn.execute(
+            """
+            INSERT INTO promo_sponsored_shown (user_id, ts) VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET ts = excluded.ts
+            """,
+            (user_id, now),
+        )
+        conn.commit()
 
 
 def record_message(*, user_id: int, username: str | None, chat_id: int, text: str) -> None:
