@@ -1325,22 +1325,39 @@ async def main() -> None:
 
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_donate, Command("donate"))
+    # До FSM: иначе в состоянии «ожидаю id» любой текст (включая /admin_stats) уходит в analyze.
+    dp.message.register(cmd_admin_stats, F.text.startswith("/admin_stats"))
+    dp.message.register(cmd_admin_recent, F.text.startswith("/admin_recent"))
     dp.message.register(on_cancel_button, F.text == BTN_CANCEL)
     dp.message.register(on_analyze_button, F.text == BTN_ANALYZE)
     dp.message.register(on_match_button, F.text == BTN_MATCH)
     dp.message.register(on_confirm_button, F.text == BTN_CONFIRM_SMURF)
     dp.message.register(on_donate_button, F.text == BTN_DONATE)
-    dp.message.register(on_analyze_target_input, UserInputState.waiting_analyze_target, F.text)
-    dp.message.register(on_confirm_target_input, UserInputState.waiting_confirm_smurf_target, F.text)
-    dp.message.register(on_match_target_input, UserInputState.waiting_match_target, F.text)
+    not_admin_cmd = ~F.text.startswith("/admin")
+    dp.message.register(
+        on_analyze_target_input,
+        UserInputState.waiting_analyze_target,
+        F.text,
+        not_admin_cmd,
+    )
+    dp.message.register(
+        on_confirm_target_input,
+        UserInputState.waiting_confirm_smurf_target,
+        F.text,
+        not_admin_cmd,
+    )
+    dp.message.register(
+        on_match_target_input,
+        UserInputState.waiting_match_target,
+        F.text,
+        not_admin_cmd,
+    )
     dp.message.register(cmd_analyze, Command("analyze"))
     dp.message.register(cmd_analyze, F.text.startswith("/analyze"))
     dp.message.register(cmd_match, Command("match"))
     dp.message.register(cmd_match, F.text.startswith("/match"))
     dp.message.register(cmd_confirm_smurf_100, Command("confirm_smurf_100"))
     dp.message.register(cmd_confirm_smurf_100, F.text.startswith("/confirm_smurf_100"))
-    dp.message.register(cmd_admin_stats, Command("admin_stats", ignore_mention=True))
-    dp.message.register(cmd_admin_recent, Command("admin_recent", ignore_mention=True))
     dp.callback_query.register(on_last_matches_callback, F.data.startswith(CB_LAST_MATCHES_PREFIX))
     dp.callback_query.register(on_suspicious_match_callback, F.data.startswith(CB_SUS_MATCH_PREFIX))
 
