@@ -5,6 +5,8 @@ import re
 
 import httpx
 
+from config import SETTINGS
+
 
 @dataclass(frozen=True)
 class DotabuffSummary:
@@ -14,8 +16,13 @@ class DotabuffSummary:
 
 class DotabuffClient:
     def __init__(self, *, timeout_s: float = 20.0, proxy: str | None = None) -> None:
+        limits = httpx.Limits(
+            max_connections=SETTINGS.http_max_connections,
+            max_keepalive_connections=SETTINGS.http_max_keepalive_connections,
+        )
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_s),
+            limits=limits,
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

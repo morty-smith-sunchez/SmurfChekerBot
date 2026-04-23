@@ -35,6 +35,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("dota_profile_bot")
 
+_OD_NET_EXC = (
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.NetworkError,
+    httpx.HTTPStatusError,
+)
+
 
 BTN_ANALYZE = "Проверить профиль"
 BTN_CONFIRM_SMURF = "Подтвердить смурфа (100%)"
@@ -225,39 +232,59 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
     dotabuff = DotabuffClient(timeout_s=SETTINGS.http_timeout_s, proxy=outbound_proxy)
 
     try:
-        stratz_summary = None
-        dotabuff_summary = None
-        try:
-            stratz_summary = await stratz.get_player_summary(pid.account_id)
-        except Exception:
-            stratz_summary = None
-        try:
-            dotabuff_summary = await dotabuff.get_player_summary(pid.account_id)
-        except Exception:
-            dotabuff_summary = None
+        async def _safe_stratz():
+            try:
+                return await stratz.get_player_summary(pid.account_id)
+            except Exception:
+                return None
 
-        hero_map: dict[int, str] = {}
-        try:
-            hero_stats = await od.get_hero_stats()
-            for h in hero_stats:
-                hid = h.get("id")
-                name = h.get("localized_name")
-                if isinstance(hid, int) and isinstance(name, str) and name:
-                    hero_map[hid] = name
-        except Exception:
-            hero_map = {}
+        async def _safe_dotabuff():
+            try:
+                return await dotabuff.get_player_summary(pid.account_id)
+            except Exception:
+                return None
 
-        try:
-            player = await od.get_player(pid.account_id)
-            matches90 = await od.get_matches(pid.account_id, days=90, limit=500)
-            matches365 = await od.get_matches(pid.account_id, days=365, limit=500)
-        except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, httpx.HTTPStatusError):
+        async def _hero_map_load() -> dict[int, str]:
+            hm: dict[int, str] = {}
+            try:
+                hero_stats = await od.get_hero_stats()
+                if isinstance(hero_stats, list):
+                    for h in hero_stats:
+                        hid = h.get("id")
+                        name = h.get("localized_name")
+                        if isinstance(hid, int) and isinstance(name, str) and name:
+                            hm[hid] = name
+            except Exception:
+                pass
+            return hm
+
+        stratz_summary, dotabuff_summary, hero_map = await asyncio.gather(
+            _safe_stratz(),
+            _safe_dotabuff(),
+            _hero_map_load(),
+        )
+
+        core = await asyncio.gather(
+            od.get_player(pid.account_id),
+            od.get_matches(pid.account_id, days=90, limit=500),
+            od.get_matches(pid.account_id, days=365, limit=500),
+            return_exceptions=True,
+        )
+        player_r, m90_r, m365_r = core
+        opendota_unreachable = any(isinstance(x, _OD_NET_EXC) for x in core) or isinstance(player_r, BaseException)
+
+        if opendota_unreachable:
             steam_profile = None
             steam_level = None
             if steam is not None and pid.steamid64 is not None:
                 try:
-                    steam_profile = await steam.get_player_summaries(pid.steamid64)
-                    steam_level = await steam.get_steam_level(pid.steamid64)
+                    sp_r, sl_r = await asyncio.gather(
+                        steam.get_player_summaries(pid.steamid64),
+                        steam.get_steam_level(pid.steamid64),
+                        return_exceptions=True,
+                    )
+                    steam_profile = sp_r if not isinstance(sp_r, BaseException) else None
+                    steam_level = sl_r if not isinstance(sl_r, BaseException) else None
                 except Exception:
                     steam_profile = None
                     steam_level = None
@@ -290,19 +317,26 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
             lines.append("Попробуйте ещё раз через минуту или с VPN/другой сетью.")
             return "\n".join(lines)
 
+        player = player_r
+        matches90 = m90_r if isinstance(m90_r, list) else []
+        matches365 = m365_r if isinstance(m365_r, list) else []
+
         # Prefer OpenDota /wl for win/loss (more accurate than limited match list)
         wl_total: dict | None = None
         wl30: dict | None = None
         wl90: dict | None = None
-        try:
-            wl_total = await od.get_winloss(pid.account_id, days=None)
-            wl30 = await od.get_winloss(pid.account_id, days=30)
-            wl90 = await od.get_winloss(pid.account_id, days=90)
-        except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, httpx.HTTPStatusError):
-            # fallback to computed values from recent matches if /wl is unavailable
+        wl_bundle = await asyncio.gather(
+            od.get_winloss(pid.account_id, days=None),
+            od.get_winloss(pid.account_id, days=30),
+            od.get_winloss(pid.account_id, days=90),
+            return_exceptions=True,
+        )
+        if any(isinstance(x, _OD_NET_EXC) for x in wl_bundle) or not all(isinstance(x, dict) for x in wl_bundle):
             wl_total = None
             wl30 = None
             wl90 = None
+        else:
+            wl_total, wl30, wl90 = wl_bundle[0], wl_bundle[1], wl_bundle[2]
 
         p30 = compute_period_stats(matches90, days=30, now_ts=now_ts)
         p90 = compute_period_stats(matches90, days=90, now_ts=now_ts)
@@ -330,8 +364,13 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
         steam_profile = None
         steam_level = None
         if steam is not None and pid.steamid64 is not None:
-            steam_profile = await steam.get_player_summaries(pid.steamid64)
-            steam_level = await steam.get_steam_level(pid.steamid64)
+            sp_r, sl_r = await asyncio.gather(
+                steam.get_player_summaries(pid.steamid64),
+                steam.get_steam_level(pid.steamid64),
+                return_exceptions=True,
+            )
+            steam_profile = sp_r if not isinstance(sp_r, BaseException) else None
+            steam_level = sl_r if not isinstance(sl_r, BaseException) else None
 
         account_age_days = None
         if steam_profile is not None and isinstance(steam_profile.timecreated, int) and steam_profile.timecreated > 0:
@@ -854,28 +893,39 @@ async def on_suspicious_match_callback(callback: CallbackQuery) -> None:
             raise RuntimeError("empty players")
 
         now_ts = int(time())
-        suspicious: list[tuple[float, int, str, str, int, float, float, float]] = []
-        for p in players:
+        sem = asyncio.Semaphore(max(1, SETTINGS.match_player_probe_concurrency))
+
+        async def _probe_player_row(p: dict) -> tuple[float, int, str, str, int, float, float, float] | None:
             if not isinstance(p, dict):
-                continue
+                return None
             account_id = p.get("account_id")
             if not isinstance(account_id, int) or account_id <= 0:
-                continue
+                return None
             persona = p.get("personaname")
             name = persona if isinstance(persona, str) and persona.strip() else f"Player {account_id}"
             hero_id = p.get("hero_id")
             hero_name = f"Hero#{hero_id}" if isinstance(hero_id, int) else "Unknown hero"
-            try:
-                smurf_score, boost_score, bought_score, matches30 = await _analyze_account_smurf_score(
-                    od, account_id, now_ts=now_ts
-                )
-            except Exception:
-                continue
+            async with sem:
+                try:
+                    smurf_score, boost_score, bought_score, matches30 = await _analyze_account_smurf_score(
+                        od, account_id, now_ts=now_ts
+                    )
+                except Exception:
+                    return None
             primary = max(smurf_score, boost_score, bought_score)
             if primary >= 0.45:
-                suspicious.append(
-                    (primary, account_id, name, hero_name, matches30, smurf_score, boost_score, bought_score)
-                )
+                return (primary, account_id, name, hero_name, matches30, smurf_score, boost_score, bought_score)
+            return None
+
+        probe_results = await asyncio.gather(
+            *[_probe_player_row(p) for p in players],
+            return_exceptions=True,
+        )
+        suspicious = [
+            r
+            for r in probe_results
+            if r is not None and not isinstance(r, BaseException)
+        ]
     except Exception:
         if callback.message is not None:
             await callback.message.answer(

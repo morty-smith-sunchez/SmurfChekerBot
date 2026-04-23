@@ -5,6 +5,8 @@ from typing import Any
 
 import httpx
 
+from config import SETTINGS
+
 
 @dataclass(frozen=True)
 class StratzSummary:
@@ -19,11 +21,16 @@ class StratzClient:
         headers = {"User-Agent": "dota_profile_bot/1.0"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        limits = httpx.Limits(
+            max_connections=SETTINGS.http_max_connections,
+            max_keepalive_connections=SETTINGS.http_max_keepalive_connections,
+        )
         self._client = httpx.AsyncClient(
             base_url="https://api.stratz.com",
             timeout=httpx.Timeout(timeout_s),
             headers=headers,
             proxy=proxy,
+            limits=limits,
         )
 
     async def aclose(self) -> None:

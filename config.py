@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     http_timeout_s: float = 20.0
     http_proxy: str | None = None
     https_proxy: str | None = None
+    # httpx pool: helps many concurrent users (each /analyze opens many parallel GETs)
+    http_max_connections: int = 48
+    http_max_keepalive_connections: int = 24
+    # Concurrent OpenDota-heavy probes per match (suspicious accounts); caps burst per callback
+    match_player_probe_concurrency: int = 6
 
     # Optional donation block shown in bot menu
     donation_text: str | None = None

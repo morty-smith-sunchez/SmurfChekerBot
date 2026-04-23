@@ -6,6 +6,8 @@ from typing import Any
 import asyncio
 import httpx
 
+from config import SETTINGS
+
 
 @dataclass(frozen=True)
 class OpenDotaPlayerSummary:
@@ -17,10 +19,15 @@ class OpenDotaPlayerSummary:
 class OpenDotaClient:
     def __init__(self, *, api_key: str | None, timeout_s: float = 45.0) -> None:
         self._api_key = api_key
+        limits = httpx.Limits(
+            max_connections=SETTINGS.http_max_connections,
+            max_keepalive_connections=SETTINGS.http_max_keepalive_connections,
+        )
         self._client = httpx.AsyncClient(
             base_url="https://api.opendota.com",
             timeout=httpx.Timeout(timeout_s),
             headers={"User-Agent": "dota_profile_bot/1.0"},
+            limits=limits,
         )
 
     async def aclose(self) -> None:
