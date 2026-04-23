@@ -9,8 +9,9 @@ from telethon.network.connection.tcpmtproxy import ConnectionTcpMTProxyRandomize
 
 from bot import analyze_player, build_donation_message_html, build_match_info_report
 from config import SETTINGS
+from dota.steam_client import SteamClient
 from rendering.schemas import AnalyzeResult
-from utils.parse_ids import parse_match_id, parse_player_id
+from utils.parse_ids import parse_match_id, parse_player_id_resolved
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("dota_profile_bot.mtproto")
@@ -19,12 +20,13 @@ logger = logging.getLogger("dota_profile_bot.mtproto")
 def _help_text() -> str:
     lines = [
         "Пришлите команду:",
-        "/analyze <steamid64 | account_id | ссылка>",
+        "/analyze <steamid64 | account_id | Dotabuff/OpenDota | Steam-профиль>",
         "/match <match_id | ссылка на матч OpenDota/Dotabuff>",
         "/donate — реквизиты для поддержки бота",
         "",
         "Пример:",
         "/analyze 76561198xxxxxxxxx",
+        "/analyze https://steamcommunity.com/profiles/76561198…",
         "/match https://www.opendota.com/matches/7890123456",
     ]
     card = (SETTINGS.donation_card or "").strip()
@@ -81,11 +83,20 @@ async def main() -> None:
             await event.respond("Нужно указать id или ссылку. Например: /analyze 123456789")
             return
 
+        steam_r = SteamClient(api_key=SETTINGS.steam_api_key, timeout_s=SETTINGS.http_timeout_s) if SETTINGS.steam_api_key else None
         try:
-            pid = parse_player_id(arg)
-        except Exception:
-            await event.respond("Не смог распознать id. Пришлите steamid64 / account_id / ссылку на dotabuff.")
+            pid = await parse_player_id_resolved(arg, steam_r)
+        except ValueError as e:
+            hint = (str(e) or "").strip()
+            await event.respond(
+                "Не смог распознать id. Пришлите steamid64, account_id, ссылку на Dotabuff/OpenDota "
+                "или на Steam (profiles/… или /id/… при STEAM_API_KEY).\n"
+                + (hint if hint else "")
+            )
             return
+        finally:
+            if steam_r is not None:
+                await steam_r.aclose()
 
         status = await event.respond("Собираю данные и считаю статистику…")
         try:

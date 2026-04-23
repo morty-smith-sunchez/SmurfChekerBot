@@ -59,3 +59,21 @@ class SteamClient:
         lvl = (((data or {}).get("response") or {}).get("player_level"))
         return int(lvl) if isinstance(lvl, int) else None
 
+    async def resolve_vanity_url(self, vanity: str) -> int | None:
+        """Resolve steamcommunity.com/id/<vanity> to steamid64 via ISteamUser/ResolveVanityURL."""
+        v = (vanity or "").strip().strip("/")
+        if not v or len(v) > 64:
+            return None
+        params = {"key": self._api_key, "vanityurl": v, "url_type": 1}
+        r = await self._client.get("/ISteamUser/ResolveVanityURL/v0001/", params=params)
+        r.raise_for_status()
+        data = r.json()
+        resp = (data or {}).get("response") or {}
+        sid = resp.get("steamid")
+        if sid is None:
+            return None
+        try:
+            return int(sid)
+        except (TypeError, ValueError):
+            return None
+

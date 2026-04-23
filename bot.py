@@ -38,7 +38,7 @@ from dota.steam_client import SteamClient
 from dota.stratz_client import StratzClient
 from rendering.analyze_card import render_analyze_card
 from rendering.schemas import AnalyzeResult
-from utils.parse_ids import ParsedPlayerId, parse_match_id, parse_player_id
+from utils.parse_ids import ParsedPlayerId, parse_match_id, parse_player_id_resolved
 
 
 logging.basicConfig(
@@ -781,13 +781,14 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         )
     parts = [
         "Пришлите команду:\n"
-        "<code>/analyze &lt;steamid64 | account_id | ссылка&gt;</code>\n"
+        "<code>/analyze &lt;steamid64 | account_id | Dotabuff/OpenDota | Steam-профиль&gt;</code>\n"
         "<code>/match &lt;match_id | ссылка на матч&gt;</code> — сводка по матчу\n"
         "<code>/donate</code> — реквизиты для поддержки бота\n\n"
         "Если вы 100% уверены, что профиль смурф:\n"
         "<code>/confirm_smurf_100 &lt;id или ссылка&gt;</code>\n\n"
         "Пример:\n"
         "<code>/analyze 76561198xxxxxxxxx</code>\n"
+        "<code>/analyze https://steamcommunity.com/profiles/76561198…</code>\n"
         "<code>/match https://www.opendota.com/matches/7890123456</code>\n\n"
         "Или просто используйте кнопки ниже 👇",
     ]
@@ -814,11 +815,21 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
         await message.answer("Нужно указать id или ссылку. Например: <code>/analyze 123456789</code>", parse_mode=ParseMode.HTML)
         return
 
+    steam_r = SteamClient(api_key=SETTINGS.steam_api_key, timeout_s=SETTINGS.http_timeout_s) if SETTINGS.steam_api_key else None
     try:
-        pid = parse_player_id(command.args)
-    except Exception:
-        await message.answer("Не смог распознать id. Пришлите steamid64 / account_id / ссылку на dotabuff.", parse_mode=ParseMode.HTML)
+        pid = await parse_player_id_resolved(command.args, steam_r)
+    except ValueError as e:
+        hint = (str(e) or "").strip()
+        await message.answer(
+            "Не смог распознать id. Пришлите steamid64, account_id, ссылку на Dotabuff/OpenDota "
+            "или на Steam-профиль (steamcommunity.com/profiles/… или /id/… при наличии STEAM_API_KEY).\n"
+            + (f"<i>{html.escape(hint)}</i>" if hint else ""),
+            parse_mode=ParseMode.HTML,
+        )
         return
+    finally:
+        if steam_r is not None:
+            await steam_r.aclose()
 
     msg = await message.answer("Собираю данные и считаю статистику…", parse_mode=ParseMode.HTML)
     try:
@@ -1069,16 +1080,27 @@ async def cmd_confirm_smurf_100(message: Message, command: CommandObject) -> Non
     if not command.args:
         await message.answer(
             "Нужно указать id или ссылку.\n"
-            "Пример: <code>/confirm_smurf_100 https://www.dotabuff.com/players/123456789</code>",
+            "Пример: <code>/confirm_smurf_100 https://www.dotabuff.com/players/123456789</code>\n"
+            "или <code>/confirm_smurf_100 https://steamcommunity.com/profiles/76561198…</code>",
             parse_mode=ParseMode.HTML,
         )
         return
 
+    steam_r = SteamClient(api_key=SETTINGS.steam_api_key, timeout_s=SETTINGS.http_timeout_s) if SETTINGS.steam_api_key else None
     try:
-        pid = parse_player_id(command.args)
-    except Exception:
-        await message.answer("Не смог распознать id. Пришлите steamid64 / account_id / ссылку.", parse_mode=ParseMode.HTML)
+        pid = await parse_player_id_resolved(command.args, steam_r)
+    except ValueError as e:
+        hint = (str(e) or "").strip()
+        await message.answer(
+            "Не смог распознать id. Пришлите steamid64, account_id, ссылку на профиль Dotabuff/OpenDota "
+            "или на Steam (profiles/… или /id/… при наличии STEAM_API_KEY).\n"
+            + (f"<i>{html.escape(hint)}</i>" if hint else ""),
+            parse_mode=ParseMode.HTML,
+        )
         return
+    finally:
+        if steam_r is not None:
+            await steam_r.aclose()
 
     od = OpenDotaClient(api_key=SETTINGS.opendota_api_key, timeout_s=SETTINGS.http_timeout_s)
     try:
@@ -1123,7 +1145,7 @@ async def cmd_confirm_smurf_100(message: Message, command: CommandObject) -> Non
 async def on_analyze_button(message: Message, state: FSMContext) -> None:
     await state.set_state(UserInputState.waiting_analyze_target)
     await message.answer(
-        "Пришли steamid64 / account_id / ссылку на профиль Dotabuff для анализа.",
+        "Пришли steamid64, account_id, ссылку на Dotabuff/OpenDota или на Steam-профиль (profiles/… или /id/… с STEAM_API_KEY).",
         parse_mode=ParseMode.HTML,
         reply_markup=MAIN_MENU,
     )
@@ -1132,7 +1154,7 @@ async def on_analyze_button(message: Message, state: FSMContext) -> None:
 async def on_confirm_button(message: Message, state: FSMContext) -> None:
     await state.set_state(UserInputState.waiting_confirm_smurf_target)
     await message.answer(
-        "Пришли steamid64 / account_id / ссылку на профиль, который ты подтверждаешь как смурф.",
+        "Пришли steamid64, account_id, ссылку на Dotabuff/OpenDota или Steam-профиль, который подтверждаешь как смурф.",
         parse_mode=ParseMode.HTML,
         reply_markup=MAIN_MENU,
     )
