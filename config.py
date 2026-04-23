@@ -37,6 +37,8 @@ class Settings(BaseSettings):
 
     # Comma-separated Telegram user ids (digits) who may use /admin_stats and /admin_recent
     admin_user_ids: str | None = None
+    # Comma-separated Telegram @usernames without @ (same admin commands; mirror only uses numeric ids above)
+    admin_usernames: str | None = None
     # If true, each user text message is also copied to admins (can be noisy)
     admin_message_mirror: bool = False
 
@@ -58,6 +60,17 @@ class Settings(BaseSettings):
         for p in raw.replace(" ", "").split(","):
             if p.isdigit():
                 out.add(int(p))
+        return out
+
+    def admin_username_set(self) -> set[str]:
+        raw = (self.admin_usernames or "").strip()
+        if not raw:
+            return set()
+        out: set[str] = set()
+        for p in raw.split(","):
+            n = p.strip().lstrip("@").lower()
+            if n:
+                out.add(n)
         return out
 
 

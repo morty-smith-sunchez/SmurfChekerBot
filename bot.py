@@ -26,6 +26,7 @@ from aiogram.types import (
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
+    User,
 )
 
 from analytics.store import fetch_recent_messages, fetch_stats, init_db, record_message
@@ -90,6 +91,15 @@ def _admin_ids() -> set[int]:
     return SETTINGS.admin_id_set()
 
 
+def _is_admin(user: User | None) -> bool:
+    if not user:
+        return False
+    if user.id in SETTINGS.admin_id_set():
+        return True
+    un = (user.username or "").strip().lstrip("@").lower()
+    return bool(un) and un in SETTINGS.admin_username_set()
+
+
 class IncomingMessageLoggingMiddleware(BaseMiddleware):
     async def __call__(
         self,
@@ -131,6 +141,7 @@ class IncomingMessageLoggingMiddleware(BaseMiddleware):
                         f"<b>user</b> <code>{user.id}</code> @{html.escape(user.username or '—')}\n"
                         f"<pre>{html.escape(raw[:3500])}</pre>"
                     )
+                    # Зеркало только на числовые ADMIN_USER_IDS (у @username в ЛС нет стабильного id в .env)
                     for aid in _admin_ids():
                         if aid == user.id:
                             continue
@@ -1241,7 +1252,7 @@ async def on_match_target_input(message: Message, state: FSMContext) -> None:
 
 
 async def cmd_admin_stats(message: Message) -> None:
-    if not message.from_user or message.from_user.id not in _admin_ids():
+    if not message.from_user or not _is_admin(message.from_user):
         return
     try:
         stats = await asyncio.to_thread(fetch_stats)
@@ -1261,7 +1272,7 @@ async def cmd_admin_stats(message: Message) -> None:
 
 
 async def cmd_admin_recent(message: Message) -> None:
-    if not message.from_user or message.from_user.id not in _admin_ids():
+    if not message.from_user or not _is_admin(message.from_user):
         return
     try:
         rows = await asyncio.to_thread(fetch_recent_messages, 30)
