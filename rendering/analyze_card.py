@@ -11,8 +11,10 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
+_RENDERING_DIR = Path(__file__).resolve().parent
 BANNER_PATH = ROOT / "assets" / "welcome_banner.png"
-# Bundled OFL font (Latin + Cyrillic); used when system fonts are missing (Docker/Linux) or unreliable.
+# Bundled OFL Noto Sans (Latin + Cyrillic). Ship next to this module so deploys that copy only `rendering/` still find it.
+PACKAGE_SANS = _RENDERING_DIR / "fonts" / "NotoSans-Regular.ttf"
 BUNDLED_SANS = ROOT / "assets" / "fonts" / "NotoSans-Regular.ttf"
 
 # Full HD frame per page; background keeps aspect ratio of banner (cover crop).
@@ -93,8 +95,8 @@ def _rank_label(rank_tier: int | None, leaderboard_rank: int | None) -> tuple[st
 
 
 def _font_paths_ordered() -> list[Path]:
-    """Prefer bundled Noto, then OS fonts known to cover Cyrillic."""
-    paths: list[Path] = [BUNDLED_SANS]
+    """Prefer packaged Noto, then OS fonts known to cover Cyrillic."""
+    paths: list[Path] = [PACKAGE_SANS, BUNDLED_SANS]
     windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot")
     if windir:
         fonts_dir = Path(windir) / "Fonts"
@@ -120,7 +122,7 @@ def _font_paths_ordered() -> list[Path]:
     return paths
 
 
-def _font_draws_cyrillic(font: ImageFont.FreeTypeFont) -> bool:
+def _font_draws_cyrillic(font: ImageFont.ImageFont) -> bool:
     """Reject bitmap / incomplete fonts: Pillow default cannot render Cyrillic."""
     try:
         bb = font.getbbox("Жы")
@@ -129,22 +131,32 @@ def _font_draws_cyrillic(font: ImageFont.FreeTypeFont) -> bool:
         return False
 
 
+def _truetype(path: str, size: int) -> ImageFont.FreeTypeFont:
+    """FreeType + BASIC layout: broken/missing libraqm on Linux often draws Cyrillic as tofu with RAQM."""
+    layout = getattr(ImageFont, "Layout", None)
+    basic = getattr(layout, "BASIC", None) if layout is not None else None
+    kwargs: dict = {"size": size}
+    if basic is not None:
+        kwargs["layout_engine"] = basic
+    return ImageFont.truetype(path, **kwargs)
+
+
 @lru_cache(maxsize=24)
 def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     for path in _font_paths_ordered():
         if not path.is_file():
             continue
         try:
-            ft = ImageFont.truetype(str(path), size=size)
+            ft = _truetype(str(path), size)
         except OSError:
             continue
-        if isinstance(ft, ImageFont.FreeTypeFont) and _font_draws_cyrillic(ft):
+        if _font_draws_cyrillic(ft):
             return ft
     for path in _font_paths_ordered():
         if not path.is_file():
             continue
         try:
-            return ImageFont.truetype(str(path), size=size)
+            return _truetype(str(path), size)
         except OSError:
             continue
     return ImageFont.load_default()
@@ -180,6 +192,19 @@ def _circle_avatar(img: Image.Image, size: int) -> Image.Image:
     out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     out.paste(img, (0, 0), mask)
     return out
+
+
+def _apply_readability_scrim(im: Image.Image) -> Image.Image:
+    """Darken mid-frame where welcome_banner.png has large baked-in branding so report text stays readable."""
+    im = im.convert("RGBA")
+    w, h = im.size
+    scrim = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(scrim)
+    y0 = int(h * 0.30)
+    y1 = int(h * 0.82)
+    sd.rectangle((0, y0, w, y1), fill=(12, 14, 24, 120))
+    out = Image.alpha_composite(im, scrim)
+    return out.convert("RGB")
 
 
 def _cover_background(banner: Image.Image, pw: int, ph: int, y_shift: int) -> Image.Image:
@@ -282,6 +307,7 @@ def render_analyze_card(
         for page_i, chunk in enumerate(chunks):
             y_shift = page_i * 72
             bg = _cover_background(banner, PAGE_W, PAGE_H, y_shift=y_shift)
+            bg = _apply_readability_scrim(bg)
             draw = ImageDraw.Draw(bg, "RGBA")
 
             if page_i == 0:
