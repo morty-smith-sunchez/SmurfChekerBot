@@ -1253,6 +1253,12 @@ async def on_match_target_input(message: Message, state: FSMContext) -> None:
 
 async def cmd_admin_stats(message: Message) -> None:
     if not message.from_user or not _is_admin(message.from_user):
+        await message.answer(
+            "Нет доступа к админ-командам. В <code>.env</code> укажите свой числовой Telegram id в "
+            "<code>ADMIN_USER_IDS</code> или логин в <code>ADMIN_USERNAMES</code> (без @), затем перезапустите бота.\n"
+            "Если id был в <code>ADMIN_USERNAMES</code> — обновите бота: числа теперь подхватываются и оттуда.",
+            parse_mode=ParseMode.HTML,
+        )
         return
     try:
         stats = await asyncio.to_thread(fetch_stats)
@@ -1273,6 +1279,11 @@ async def cmd_admin_stats(message: Message) -> None:
 
 async def cmd_admin_recent(message: Message) -> None:
     if not message.from_user or not _is_admin(message.from_user):
+        await message.answer(
+            "Нет доступа к админ-командам. Проверьте <code>ADMIN_USER_IDS</code> / <code>ADMIN_USERNAMES</code> в "
+            "<code>.env</code> и перезапуск бота.",
+            parse_mode=ParseMode.HTML,
+        )
         return
     try:
         rows = await asyncio.to_thread(fetch_recent_messages, 30)
@@ -1328,8 +1339,8 @@ async def main() -> None:
     dp.message.register(cmd_match, F.text.startswith("/match"))
     dp.message.register(cmd_confirm_smurf_100, Command("confirm_smurf_100"))
     dp.message.register(cmd_confirm_smurf_100, F.text.startswith("/confirm_smurf_100"))
-    dp.message.register(cmd_admin_stats, Command("admin_stats"))
-    dp.message.register(cmd_admin_recent, Command("admin_recent"))
+    dp.message.register(cmd_admin_stats, Command("admin_stats", ignore_mention=True))
+    dp.message.register(cmd_admin_recent, Command("admin_recent", ignore_mention=True))
     dp.callback_query.register(on_last_matches_callback, F.data.startswith(CB_LAST_MATCHES_PREFIX))
     dp.callback_query.register(on_suspicious_match_callback, F.data.startswith(CB_SUS_MATCH_PREFIX))
 

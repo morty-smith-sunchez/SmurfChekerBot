@@ -35,9 +35,9 @@ class Settings(BaseSettings):
     donation_url: str | None = None
     donation_card: str | None = None
 
-    # Comma-separated Telegram user ids (digits) who may use /admin_stats and /admin_recent
+    # Comma-separated Telegram user ids (digits) — /admin_* и зеркало сообщений
     admin_user_ids: str | None = None
-    # Comma-separated Telegram @usernames without @ (same admin commands; mirror only uses numeric ids above)
+    # Логины без @ (те же /admin_*). Чисто числовые значения здесь тоже считаются user id (если перепутали с ADMIN_USER_IDS)
     admin_usernames: str | None = None
     # If true, each user text message is also copied to admins (can be noisy)
     admin_message_mirror: bool = False
@@ -53,22 +53,32 @@ class Settings(BaseSettings):
         return int(self.telegram_api_id), self.telegram_api_hash
 
     def admin_id_set(self) -> set[int]:
-        raw = (self.admin_user_ids or "").strip()
-        if not raw:
-            return set()
+        """Numeric ids from ADMIN_USER_IDS and any digit-only entries from ADMIN_USERNAMES."""
         out: set[int] = set()
-        for p in raw.replace(" ", "").split(","):
-            if p.isdigit():
-                out.add(int(p))
+
+        def _ingest_ids(s: str | None) -> None:
+            raw = (s or "").strip()
+            if not raw:
+                return
+            for p in raw.replace(" ", "").split(","):
+                if p.isdigit():
+                    out.add(int(p))
+
+        _ingest_ids(self.admin_user_ids)
+        _ingest_ids(self.admin_usernames)
         return out
 
     def admin_username_set(self) -> set[str]:
+        """@usernames only (segments that are not purely digits)."""
         raw = (self.admin_usernames or "").strip()
         if not raw:
             return set()
         out: set[str] = set()
         for p in raw.split(","):
-            n = p.strip().lstrip("@").lower()
+            n = p.strip().lstrip("@")
+            if n.isdigit():
+                continue
+            n = n.lower()
             if n:
                 out.add(n)
         return out
