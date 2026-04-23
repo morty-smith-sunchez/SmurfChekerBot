@@ -17,7 +17,7 @@
 1) Установка зависимостей:
 
 ```bash
-cd "c:\Users\Дима\Documents\my projects\dota_profile_bot"
+cd "c:\Users\****\Documents\my projects\dota_profile_bot"
 python -m pip install -r requirements.txt
 ```
 
