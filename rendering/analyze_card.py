@@ -8,30 +8,35 @@ import textwrap
 from functools import lru_cache
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+try:
+    from pilmoji import Pilmoji
+except ImportError:
+    Pilmoji = None  # type: ignore[misc, assignment]
 
 ROOT = Path(__file__).resolve().parent.parent
 _RENDERING_DIR = Path(__file__).resolve().parent
-# Welcome /start: `welcome_banner.png` (with branding). PNG reports: `report_background.png` (same look, no text).
 WELCOME_BANNER_PATH = ROOT / "assets" / "welcome_banner.png"
 REPORT_BACKGROUND_PATH = ROOT / "assets" / "report_background.png"
-# Bundled OFL Noto Sans (Latin + Cyrillic). Ship next to this module so deploys that copy only `rendering/` still find it.
 PACKAGE_SANS = _RENDERING_DIR / "fonts" / "NotoSans-Regular.ttf"
 BUNDLED_SANS = ROOT / "assets" / "fonts" / "NotoSans-Regular.ttf"
 
-# Full HD frame per page; background keeps aspect ratio of banner (cover crop).
 PAGE_W = 1920
 PAGE_H = 1080
 MARGIN = 56
-HEADER_H = 140
-HEADER_THIN = 96
+# No opaque header bar: logo + profile start below a thin top margin.
+LOGO_Y = 18
+AVATAR_TOP = 78
 AVATAR_SIZE = 196
-BODY_FONT_SIZE = 28
-TITLE_FONT_SIZE = 46
-SUB_FONT_SIZE = 30
-LINE_H = 38
-WRAP_CHARS = 88
-MAX_PAGES = 8
+BRAND_FONT_SIZE = 44
+BODY_FONT_MAX = 28
+BODY_FONT_MIN = 20
+LINE_H_MAX = 38
+LINE_H_MIN = 28
+WRAP_MIN = 92
+WRAP_MAX = 120
+MAX_PAGES = 2
 
 _MEDAL_NAMES: dict[int, str] = {
     1: "Рекрут",
@@ -63,7 +68,6 @@ def _strip_html_line(line: str) -> str:
 
 
 def _filter_banner_duplicate_lines(lines: list[str]) -> list[str]:
-    """Do not repeat banner slogans inside the body; they stay only in the drawn header."""
     out: list[str] = []
     for line in lines:
         s = line.strip()
@@ -97,7 +101,6 @@ def _rank_label(rank_tier: int | None, leaderboard_rank: int | None) -> tuple[st
 
 
 def _font_paths_ordered() -> list[Path]:
-    """Prefer packaged Noto, then OS fonts known to cover Cyrillic."""
     paths: list[Path] = [PACKAGE_SANS, BUNDLED_SANS]
     windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot")
     if windir:
@@ -125,7 +128,6 @@ def _font_paths_ordered() -> list[Path]:
 
 
 def _font_draws_cyrillic(font: ImageFont.ImageFont) -> bool:
-    """Reject bitmap / incomplete fonts: Pillow default cannot render Cyrillic."""
     try:
         bb = font.getbbox("Жы")
         return bb[2] > bb[0] and bb[3] > bb[1]
@@ -134,7 +136,6 @@ def _font_draws_cyrillic(font: ImageFont.ImageFont) -> bool:
 
 
 def _truetype(path: str, size: int) -> ImageFont.FreeTypeFont:
-    """FreeType + BASIC layout: broken/missing libraqm on Linux often draws Cyrillic as tofu with RAQM."""
     layout = getattr(ImageFont, "Layout", None)
     basic = getattr(layout, "BASIC", None) if layout is not None else None
     kwargs: dict = {"size": size}
@@ -143,7 +144,7 @@ def _truetype(path: str, size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(path, **kwargs)
 
 
-@lru_cache(maxsize=24)
+@lru_cache(maxsize=32)
 def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     for path in _font_paths_ordered():
         if not path.is_file():
@@ -164,6 +165,27 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+def _text_stroke_kw() -> dict:
+    return {"stroke_width": 2, "stroke_fill": (14, 16, 26)}
+
+
+def _pj_text(
+    pj: object,
+    xy: tuple[int, int],
+    text: str,
+    fill: tuple[int, int, int],
+    font: ImageFont.ImageFont,
+    *,
+    use_pilmoji: bool,
+    emoji_scale: float = 1.08,
+) -> None:
+    stroke = _text_stroke_kw()
+    if use_pilmoji:
+        pj.text(xy, text, fill, font, emoji_scale_factor=emoji_scale, **stroke)  # type: ignore[attr-defined]
+    else:
+        pj.text(xy, text, font=font, fill=fill, **stroke)  # type: ignore[attr-defined]
+
+
 def _make_rank_badge(rank_tier: int | None, leaderboard_rank: int | None) -> Image.Image:
     w, h = 380, 88
     im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -180,9 +202,15 @@ def _make_rank_badge(rank_tier: int | None, leaderboard_rank: int | None) -> Ima
     draw.rounded_rectangle((0, 0, w - 1, h - 1), radius=22, fill=(*fill, 235), outline=(255, 255, 255, 90), width=2)
     font_big = _load_font(30)
     font_small = _load_font(22)
-    draw.text((18, 12), title, font=font_big, fill=(255, 255, 255, 255))
-    if subtitle:
-        draw.text((18, 52), subtitle, font=font_small, fill=(240, 240, 255, 240))
+    if Pilmoji is not None:
+        with Pilmoji(im) as pj:
+            pj.text((18, 12), title, (255, 255, 255), font_big, stroke_width=1, stroke_fill=(0, 0, 0))
+            if subtitle:
+                pj.text((18, 52), subtitle, (240, 240, 255), font_small, stroke_width=1, stroke_fill=(0, 0, 0))
+    else:
+        draw.text((18, 12), title, font=font_big, fill=(255, 255, 255, 255), stroke_width=1, stroke_fill=(0, 0, 0))
+        if subtitle:
+            draw.text((18, 52), subtitle, font=font_small, fill=(240, 240, 255, 240), stroke_width=1, stroke_fill=(0, 0, 0))
     return im
 
 
@@ -196,21 +224,8 @@ def _circle_avatar(img: Image.Image, size: int) -> Image.Image:
     return out
 
 
-def _apply_readability_scrim(im: Image.Image) -> Image.Image:
-    """Darken mid-frame when falling back to welcome banner that has baked-in center text."""
-    im = im.convert("RGBA")
-    w, h = im.size
-    scrim = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(scrim)
-    y0 = int(h * 0.30)
-    y1 = int(h * 0.82)
-    sd.rectangle((0, y0, w, y1), fill=(12, 14, 24, 120))
-    out = Image.alpha_composite(im, scrim)
-    return out.convert("RGB")
-
-
 def _cover_background(banner: Image.Image, pw: int, ph: int, y_shift: int) -> Image.Image:
-    """Scale+crop banner to fill (pw, ph) keeping aspect ratio (cover)."""
+    """Cover-crop only; do not alter colors — background must look like the source file."""
     bw, bh = banner.size
     scale = max(pw / bw, ph / bh)
     nw = max(int(bw * scale) + 1, pw)
@@ -219,42 +234,50 @@ def _cover_background(banner: Image.Image, pw: int, ph: int, y_shift: int) -> Im
     left = max(0, (nw - pw) // 2)
     top0 = max(0, (nh - ph) // 2)
     top = min(max(0, top0 + y_shift), nh - ph)
-    crop = scaled.crop((left, top, left + pw, top + ph))
-    crop = ImageEnhance.Brightness(crop).enhance(0.50)
-    crop = ImageEnhance.Contrast(crop).enhance(1.06)
-    return crop.convert("RGB")
+    return scaled.crop((left, top, left + pw, top + ph)).convert("RGB")
 
 
-def _wrap_plain_text(plain_lines: list[str]) -> list[str]:
+def _wrap_plain_text(plain_lines: list[str], width: int) -> list[str]:
     wrapped: list[str] = []
     for para in "\n".join(plain_lines).split("\n"):
         if not para.strip():
             wrapped.append("")
             continue
-        wrapped.extend(textwrap.wrap(para, width=WRAP_CHARS) or [""])
+        wrapped.extend(textwrap.wrap(para, width=width) or [""])
     return wrapped if wrapped else [""]
 
 
-def _split_chunks(
-    wrapped: list[str],
-    *,
-    first_page_lines: int,
-    other_page_lines: int,
-) -> list[list[str]]:
+def _split_two_chunks(wrapped: list[str], first_page_lines: int, second_page_lines: int) -> list[list[str]]:
     if first_page_lines <= 0:
         first_page_lines = 1
-    if other_page_lines <= 0:
-        other_page_lines = 1
-    chunks: list[list[str]] = []
-    idx = 0
-    chunks.append(wrapped[idx : idx + first_page_lines])
-    idx += first_page_lines
-    while idx < len(wrapped):
-        chunks.append(wrapped[idx : idx + other_page_lines])
-        idx += other_page_lines
-    while len(chunks) > 1 and not any(x.strip() for x in chunks[-1]):
-        chunks.pop()
+    if second_page_lines <= 0:
+        second_page_lines = 1
+    a = wrapped[:first_page_lines]
+    b = wrapped[first_page_lines : first_page_lines + second_page_lines]
+    chunks: list[list[str]] = [a]
+    if any(x.strip() for x in b):
+        chunks.append(b)
     return chunks[:MAX_PAGES]
+
+
+def _estimate_page1_body_start(
+    *,
+    steamid64: int | None,
+    steam_level: int | None,
+    steam_created: str | None,
+    y0: int,
+    badge_h: int,
+) -> int:
+    y_meta = y0 + 108
+    if steamid64:
+        y_meta += 34
+    if steam_level is not None:
+        y_meta += 34
+    if steam_created:
+        y_meta += 34
+    badge_y_est = max(y0 + AVATAR_SIZE + 12, y_meta + 8)
+    sep_y_est = badge_y_est + badge_h + 24
+    return sep_y_est + 28
 
 
 def render_analyze_card(
@@ -275,51 +298,85 @@ def render_analyze_card(
 
     try:
         plain = _filter_banner_duplicate_lines([_strip_html_line(x) for x in html_lines])
-        wrapped = _wrap_plain_text(plain)
-        use_report_bg = REPORT_BACKGROUND_PATH.is_file() and bg_file == REPORT_BACKGROUND_PATH
         banner = Image.open(bg_file).convert("RGB")
 
-        font_title = _load_font(TITLE_FONT_SIZE)
-        font_sub = _load_font(SUB_FONT_SIZE)
-        font_body = _load_font(BODY_FONT_SIZE)
+        chosen: tuple[int, int, int] | None = None
+        wrapped: list[str] = []
+        for body_sz in range(BODY_FONT_MAX, BODY_FONT_MIN - 1, -1):
+            line_h = max(LINE_H_MIN, min(LINE_H_MAX, body_sz + 10))
+            wrap_w = WRAP_MIN + (BODY_FONT_MAX - body_sz) * 4
+            wrap_w = min(WRAP_MAX, max(WRAP_MIN, wrap_w))
+            w = _wrap_plain_text(plain, wrap_w)
+            font_body = _load_font(body_sz)
+            nick_sz = max(34, min(42, body_sz + 10))
+            meta_sz = max(22, body_sz - 2)
+            first_body_y = _estimate_page1_body_start(
+                steamid64=steamid64,
+                steam_level=steam_level,
+                steam_created=steam_created,
+                y0=AVATAR_TOP,
+                badge_h=88,
+            )
+            avail1 = max(1, (PAGE_H - first_body_y - MARGIN) // line_h)
+            body_top_p2 = AVATAR_TOP
+            avail2 = max(1, (PAGE_H - body_top_p2 - MARGIN) // line_h)
+            cap = avail1 + avail2
+            if len(w) <= cap:
+                chosen = (body_sz, line_h, wrap_w)
+                wrapped = w
+                break
+        if chosen is None:
+            body_sz, line_h, wrap_w = BODY_FONT_MIN, LINE_H_MIN, WRAP_MAX
+            wrapped = _wrap_plain_text(plain, wrap_w)
+            font_body = _load_font(body_sz)
+            nick_sz = max(34, min(42, body_sz + 10))
+            meta_sz = max(22, body_sz - 2)
+            first_body_y = _estimate_page1_body_start(
+                steamid64=steamid64,
+                steam_level=steam_level,
+                steam_created=steam_created,
+                y0=AVATAR_TOP,
+                badge_h=88,
+            )
+            avail1 = max(1, (PAGE_H - first_body_y - MARGIN) // line_h)
+            avail2 = max(1, (PAGE_H - AVATAR_TOP - MARGIN) // line_h)
+            cap = avail1 + avail2
+            if len(wrapped) > cap:
+                wrapped = wrapped[: max(0, cap - 1)]
+                wrapped.append("… (часть отчёта не поместилась на 2 страницы)")
+        else:
+            body_sz, line_h, wrap_w = chosen
+            font_body = _load_font(body_sz)
+            nick_sz = max(34, min(42, body_sz + 10))
+            meta_sz = max(22, body_sz - 2)
 
-        y0 = HEADER_H + 24
-        y_meta = y0 + 108
-        if steamid64:
-            y_meta += 34
-        if steam_level is not None:
-            y_meta += 34
-        if steam_created:
-            y_meta += 34
-        badge_h = 88
-        badge_y_est = max(y0 + AVATAR_SIZE + 12, y_meta + 8)
-        sep_y_est = badge_y_est + badge_h + 24
-        first_body_y = sep_y_est + 28
-        avail1 = (PAGE_H - first_body_y - MARGIN) // LINE_H
-        avail_rest = (PAGE_H - HEADER_THIN - MARGIN - 32) // LINE_H
-        cap_lines = avail1 + (MAX_PAGES - 1) * avail_rest
-        if len(wrapped) > cap_lines:
-            wrapped = wrapped[: max(0, cap_lines - 1)]
-            wrapped.append("… (далее не поместилось на изображении)")
-        chunks = _split_chunks(wrapped, first_page_lines=avail1, other_page_lines=avail_rest)
+        first_body_y = _estimate_page1_body_start(
+            steamid64=steamid64,
+            steam_level=steam_level,
+            steam_created=steam_created,
+            y0=AVATAR_TOP,
+            badge_h=88,
+        )
+        avail1 = max(1, (PAGE_H - first_body_y - MARGIN) // line_h)
+        avail2 = max(1, (PAGE_H - AVATAR_TOP - MARGIN) // line_h)
+        chunks = _split_two_chunks(wrapped, avail1, avail2)
         if not chunks:
             chunks = [wrapped]
 
+        font_brand = _load_font(BRAND_FONT_SIZE)
+        font_nick = _load_font(nick_sz)
+        font_meta = _load_font(meta_sz)
+
         pages: list[bytes] = []
-        total_pages = len(chunks)
+
+        use_pj = Pilmoji is not None
 
         for page_i, chunk in enumerate(chunks):
-            y_shift = page_i * 72
-            bg = _cover_background(banner, PAGE_W, PAGE_H, y_shift=y_shift)
-            if not use_report_bg:
-                bg = _apply_readability_scrim(bg)
-            draw = ImageDraw.Draw(bg, "RGBA")
+            bg = _cover_background(banner, PAGE_W, PAGE_H, y_shift=0)
+            draw = ImageDraw.Draw(bg)
+            y0 = AVATAR_TOP
 
             if page_i == 0:
-                draw.rectangle((0, 0, PAGE_W, HEADER_H), fill=(10, 12, 22, 228))
-                draw.text((MARGIN, 32), "SmurfChekBot · отчёт", font=font_title, fill=(245, 248, 255))
-                draw.text((MARGIN, 92), "смурфы и аккбаеры", font=font_sub, fill=(180, 190, 210))
-
                 if avatar_png:
                     try:
                         av = Image.open(io.BytesIO(avatar_png)).convert("RGBA")
@@ -328,51 +385,64 @@ def render_analyze_card(
                     except Exception:
                         draw.ellipse(
                             (MARGIN, y0, MARGIN + AVATAR_SIZE, y0 + AVATAR_SIZE),
-                            outline=(200, 200, 220, 200),
+                            outline=(200, 200, 220),
                             width=3,
                         )
                 else:
                     draw.ellipse(
                         (MARGIN, y0, MARGIN + AVATAR_SIZE, y0 + AVATAR_SIZE),
-                        outline=(160, 170, 190, 200),
+                        outline=(160, 170, 190),
                         width=3,
                     )
 
                 tx = MARGIN + AVATAR_SIZE + 28
-                nick = nickname or f"account {account_id}"
-                draw.text((tx, y0 + 6), nick[:48], font=font_title, fill=(255, 255, 255))
-                draw.text((tx, y0 + 62), f"account_id: {account_id}", font=font_sub, fill=(200, 210, 230))
                 ym = y0 + 108
                 if steamid64:
-                    draw.text((tx, ym), f"steamid64: {steamid64}", font=font_sub, fill=(190, 200, 220))
                     ym += 34
                 if steam_level is not None:
-                    draw.text((tx, ym), f"Steam level: {steam_level}", font=font_sub, fill=(190, 200, 220))
                     ym += 34
                 if steam_created:
-                    draw.text((tx, ym), f"Steam с: {steam_created}", font=font_sub, fill=(190, 200, 220))
                     ym += 34
-
                 badge = _make_rank_badge(rank_tier, leaderboard_rank)
                 badge_y = max(y0 + AVATAR_SIZE + 12, ym + 8)
                 bg.paste(badge, (MARGIN, badge_y), badge)
                 sep_y_local = badge_y + badge.height + 24
-                draw.line((MARGIN, sep_y_local, PAGE_W - MARGIN, sep_y_local), fill=(120, 130, 160, 160), width=2)
-                y_text = sep_y_local + 28
+                draw.line((MARGIN, sep_y_local, PAGE_W - MARGIN, sep_y_local), fill=(140, 150, 175), width=2)
+                y_text_body = sep_y_local + 28
             else:
-                draw.rectangle((0, 0, PAGE_W, HEADER_THIN), fill=(10, 12, 22, 228))
-                cap = f"SmurfChekBot · стр. {page_i + 1}/{total_pages}"
-                draw.text((MARGIN, 28), cap, font=font_title, fill=(245, 248, 255))
-                y_text = HEADER_THIN + 28
+                y_text_body = AVATAR_TOP + 8
 
-            for line in chunk:
-                if y_text > PAGE_H - MARGIN - LINE_H:
-                    break
-                draw.text((MARGIN, y_text), line or " ", font=font_body, fill=(230, 235, 245))
-                y_text += LINE_H
+            def _draw_all_text(pj: object) -> None:
+                _pj_text(pj, (MARGIN, LOGO_Y), "SmurfChekBot", (248, 250, 255), font_brand, use_pilmoji=use_pj)
+                if page_i == 0:
+                    tx = MARGIN + AVATAR_SIZE + 28
+                    nick = nickname or f"account {account_id}"
+                    _pj_text(pj, (tx, y0 + 6), nick[:48], (255, 255, 255), font_nick, use_pilmoji=use_pj)
+                    _pj_text(pj, (tx, y0 + 62), f"account_id: {account_id}", (210, 218, 235), font_meta, use_pilmoji=use_pj)
+                    ym = y0 + 108
+                    if steamid64:
+                        _pj_text(pj, (tx, ym), f"steamid64: {steamid64}", (200, 210, 228), font_meta, use_pilmoji=use_pj)
+                        ym += 34
+                    if steam_level is not None:
+                        _pj_text(pj, (tx, ym), f"Steam level: {steam_level}", (200, 210, 228), font_meta, use_pilmoji=use_pj)
+                        ym += 34
+                    if steam_created:
+                        _pj_text(pj, (tx, ym), f"Steam с: {steam_created}", (200, 210, 228), font_meta, use_pilmoji=use_pj)
+                yt = y_text_body
+                for line in chunk:
+                    if yt > PAGE_H - MARGIN - line_h:
+                        break
+                    _pj_text(pj, (MARGIN, yt), line or " ", (232, 236, 246), font_body, use_pilmoji=use_pj)
+                    yt += line_h
+
+            if use_pj:
+                with Pilmoji(bg) as pj:
+                    _draw_all_text(pj)
+            else:
+                _draw_all_text(draw)
 
             buf = io.BytesIO()
-            bg.convert("RGB").save(buf, format="PNG", optimize=True)
+            bg.save(buf, format="PNG", optimize=True)
             pages.append(buf.getvalue())
 
         return pages
