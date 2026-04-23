@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     http_proxy: str | None = None
     https_proxy: str | None = None
 
+    # Optional donation block shown in bot menu
+    donation_text: str | None = None
+    donation_url: str | None = None
+
     def require_telegram_token(self) -> str:
         if not self.telegram_bot_token:
             raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Create .env next to bot.py")

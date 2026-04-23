@@ -31,6 +31,9 @@ OPENDOTA_API_KEY=...
 STRATZ_API_KEY=...
 HTTP_PROXY=http://127.0.0.1:8080
 HTTPS_PROXY=http://127.0.0.1:8080
+# блок пожертвований (опционально):
+DONATION_TEXT=Поддержать проект: карта 0000 0000 0000 0000
+DONATION_URL=https://example.com/donate
 ```
 
 Для GitHub:

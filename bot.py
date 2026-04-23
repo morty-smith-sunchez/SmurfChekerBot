@@ -37,6 +37,7 @@ logger = logging.getLogger("dota_profile_bot")
 
 BTN_ANALYZE = "Проверить профиль"
 BTN_CONFIRM_SMURF = "Подтвердить смурфа (100%)"
+BTN_DONATE = "Пожертвовать на развитие"
 BTN_CANCEL = "Отмена"
 
 
@@ -49,6 +50,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=BTN_ANALYZE)],
         [KeyboardButton(text=BTN_CONFIRM_SMURF)],
+        [KeyboardButton(text=BTN_DONATE)],
         [KeyboardButton(text=BTN_CANCEL)],
     ],
     resize_keyboard=True,
@@ -533,6 +535,29 @@ async def on_confirm_button(message: Message, state: FSMContext) -> None:
     )
 
 
+async def on_donate_button(message: Message) -> None:
+    lines = [
+        "<b>Поддержать развитие бота</b>",
+        "Спасибо за поддержку проекта! Это помогает оплачивать сервер и улучшать функционал.",
+    ]
+    if SETTINGS.donation_text:
+        lines.append("")
+        lines.append(SETTINGS.donation_text)
+    if SETTINGS.donation_url:
+        lines.append("")
+        lines.append(f"Ссылка для доната: {SETTINGS.donation_url}")
+    if not SETTINGS.donation_text and not SETTINGS.donation_url:
+        lines.append("")
+        lines.append("Реквизиты пока не настроены. Напишите администратору бота.")
+
+    await message.answer(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=MAIN_MENU,
+    )
+
+
 async def on_cancel_button(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
@@ -574,6 +599,7 @@ async def main() -> None:
     dp.message.register(on_cancel_button, F.text == BTN_CANCEL)
     dp.message.register(on_analyze_button, F.text == BTN_ANALYZE)
     dp.message.register(on_confirm_button, F.text == BTN_CONFIRM_SMURF)
+    dp.message.register(on_donate_button, F.text == BTN_DONATE)
     dp.message.register(on_analyze_target_input, UserInputState.waiting_analyze_target, F.text)
     dp.message.register(on_confirm_target_input, UserInputState.waiting_confirm_smurf_target, F.text)
     dp.message.register(cmd_analyze, Command("analyze"))
