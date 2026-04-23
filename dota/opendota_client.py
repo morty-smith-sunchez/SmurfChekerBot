@@ -79,6 +79,10 @@ class OpenDotaClient:
         data = await self._get_json(f"/api/players/{account_id}/matches", params=self._params(params))
         return data if isinstance(data, list) else []
 
+    async def get_match(self, match_id: int) -> dict[str, Any]:
+        data = await self._get_json(f"/api/matches/{match_id}", params=self._params())
+        return data if isinstance(data, dict) else {}
+
     async def get_heroes(self, account_id: int, *, limit: int = 20) -> list[dict[str, Any]]:
         params = {"limit": int(limit)}
         data = await self._get_json(f"/api/players/{account_id}/heroes", params=self._params(params))

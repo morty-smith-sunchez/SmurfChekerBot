@@ -14,8 +14,7 @@ from aiogram.enums.parse_mode import ParseMode
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
 
 from analysis.learning import SmurfSample, adaptive_smurf_bonus, avg_kda, register_confirmed_smurf
 from analysis.metrics import PeriodStats, compute_period_stats
@@ -39,6 +38,8 @@ BTN_ANALYZE = "Проверить профиль"
 BTN_CONFIRM_SMURF = "Подтвердить смурфа (100%)"
 BTN_DONATE = "Пожертвовать на развитие"
 BTN_CANCEL = "Отмена"
+CB_LAST_MATCHES_PREFIX = "last_matches:"
+CB_SUS_MATCH_PREFIX = "sus_match:"
 
 
 class UserInputState(StatesGroup):
@@ -104,6 +105,22 @@ def _format_top_heroes(ps: PeriodStats, hero_map: dict[int, str], *, k: int = 5)
     for hid, games, wr in ps.top_heroes_by_winrate[:k]:
         parts.append(f"{_hero_name(hero_map, hid)} ({games}, {_pct(wr)})")
     return ", ".join(parts)
+
+
+def _is_win(match: dict) -> bool | None:
+    radiant_win = match.get("radiant_win")
+    player_slot = match.get("player_slot")
+    if not isinstance(radiant_win, bool) or not isinstance(player_slot, int):
+        return None
+    is_radiant = player_slot < 128
+    return radiant_win if is_radiant else not radiant_win
+
+
+def _format_duration(duration_s: int | None) -> str:
+    if not isinstance(duration_s, int) or duration_s < 0:
+        return "—"
+    minutes, seconds = divmod(duration_s, 60)
+    return f"{minutes}:{seconds:02d}"
 
 
 def _extract_prev60_from_matches(matches90: list[dict], *, now_ts: int) -> list[dict]:
@@ -416,6 +433,108 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
         await dotabuff.aclose()
 
 
+async def build_last_matches_report(account_id: int) -> str:
+    od = OpenDotaClient(api_key=SETTINGS.opendota_api_key, timeout_s=SETTINGS.http_timeout_s)
+    try:
+        hero_map: dict[int, str] = {}
+        try:
+            hero_stats = await od.get_hero_stats()
+            for h in hero_stats:
+                hid = h.get("id")
+                name = h.get("localized_name")
+                if isinstance(hid, int) and isinstance(name, str) and name:
+                    hero_map[hid] = name
+        except Exception:
+            hero_map = {}
+
+        matches = await od.get_matches(account_id, days=30, limit=3)
+    finally:
+        await od.aclose()
+
+    if not matches:
+        return (
+            "<b>Последние 3 игры</b>\n"
+            "Не удалось получить матчи по этому профилю (возможно, профиль закрыт или нет свежих игр)."
+        )
+
+    lines: list[str] = [f"<b>Последние 3 игры</b> (<code>{account_id}</code>)"]
+    for idx, m in enumerate(matches[:3], start=1):
+        hero_id = m.get("hero_id") if isinstance(m.get("hero_id"), int) else -1
+        hero = _hero_name(hero_map, hero_id) if hero_id != -1 else "—"
+        kills = int(m.get("kills") or 0)
+        deaths = int(m.get("deaths") or 0)
+        assists = int(m.get("assists") or 0)
+        duration = _format_duration(m.get("duration"))
+        start = _fmt_ts(m.get("start_time")) or "—"
+        wl = _is_win(m)
+        result = "Победа" if wl is True else ("Поражение" if wl is False else "Неизвестно")
+        lines.append(
+            f"\n<b>{idx}) {hero}</b>\n"
+            f"- Результат: {result}\n"
+            f"- K/D/A: {kills}/{deaths}/{assists}\n"
+            f"- Длительность: {duration}\n"
+            f"- Дата: {start}"
+        )
+
+    return "\n".join(lines)
+
+
+async def _analyze_account_smurf_score(od: OpenDotaClient, account_id: int, *, now_ts: int) -> tuple[float, str, int]:
+    player = await od.get_player(account_id)
+    matches90 = await od.get_matches(account_id, days=90, limit=500)
+    matches365 = await od.get_matches(account_id, days=365, limit=500)
+
+    wl_total: dict | None = None
+    wl30: dict | None = None
+    wl90: dict | None = None
+    try:
+        wl_total = await od.get_winloss(account_id, days=None)
+        wl30 = await od.get_winloss(account_id, days=30)
+        wl90 = await od.get_winloss(account_id, days=90)
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, httpx.HTTPStatusError):
+        wl_total = None
+        wl30 = None
+        wl90 = None
+
+    p30 = compute_period_stats(matches90, days=30, now_ts=now_ts)
+    p90 = compute_period_stats(matches90, days=90, now_ts=now_ts)
+
+    _w_total, g_total, wr_total = _wl_to_wr(wl_total) if wl_total is not None else (p90.wins, p90.matches, p90.winrate)
+    _w30, _g30, wr30 = _wl_to_wr(wl30) if wl30 is not None else (p30.wins, p30.matches, p30.winrate)
+    _w90, _g90, wr90 = _wl_to_wr(wl90) if wl90 is not None else (p90.wins, p90.matches, p90.winrate)
+
+    before_start = now_ts - 120 * 86400
+    before_end = now_ts - 30 * 86400
+    before_matches = _matches_between(matches365, start_ts=before_start, end_ts=before_end)
+    p_before = compute_period_stats(before_matches, days=90, now_ts=now_ts) if before_matches else None
+    inactivity_days = _inactivity_gap_days_before_recent_window(matches365, recent_days=30, now_ts=now_ts)
+    recent_start_30 = now_ts - 30 * 86400
+    matches30 = [m for m in matches90 if isinstance(m.get("start_time"), int) and m["start_time"] >= recent_start_30]
+
+    susp = score_suspicion(
+        p30=p30,
+        p90=p90,
+        p_before=p_before,
+        matches30=matches30,
+        matches90=matches90,
+        rank_tier=player.rank_tier,
+        account_age_days=None,
+        total_games=g_total,
+        total_winrate=wr_total,
+        inactivity_days=inactivity_days,
+    )
+    kda30 = avg_kda(matches30)
+    adaptive_bonus, _adaptive_reason = adaptive_smurf_bonus(
+        total_games=g_total,
+        wr30=wr30,
+        wr90=wr90,
+        kda30=kda30,
+        matches30=p30.matches,
+    )
+    smurf_score = min(1.0, susp.smurf_score + adaptive_bonus)
+    return smurf_score, _score_label(smurf_score), p30.matches
+
+
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
@@ -459,7 +578,144 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
         )
         return
 
-    await msg.edit_text(report, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Подробно: 3 последние игры",
+                    callback_data=f"{CB_LAST_MATCHES_PREFIX}{pid.account_id}",
+                )
+            ]
+        ]
+    )
+    await msg.edit_text(
+        report,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=keyboard,
+    )
+
+
+async def on_last_matches_callback(callback: CallbackQuery) -> None:
+    data = callback.data or ""
+    if not data.startswith(CB_LAST_MATCHES_PREFIX):
+        await callback.answer()
+        return
+    account_id_raw = data[len(CB_LAST_MATCHES_PREFIX) :]
+    try:
+        account_id = int(account_id_raw)
+    except Exception:
+        await callback.answer("Некорректный ID профиля", show_alert=True)
+        return
+
+    await callback.answer("Загружаю последние матчи…")
+    try:
+        report = await build_last_matches_report(account_id)
+    except Exception:
+        report = "Не удалось получить последние матчи из OpenDota. Попробуйте чуть позже."
+    if callback.message is not None:
+        await callback.message.answer(report, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+    try:
+        od = OpenDotaClient(api_key=SETTINGS.opendota_api_key, timeout_s=SETTINGS.http_timeout_s)
+        matches = await od.get_matches(account_id, days=30, limit=3)
+    except Exception:
+        matches = []
+    finally:
+        if "od" in locals():
+            await od.aclose()
+
+    if callback.message is not None and matches:
+        buttons: list[list[InlineKeyboardButton]] = []
+        for m in matches[:3]:
+            match_id = m.get("match_id")
+            if not isinstance(match_id, int):
+                continue
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"Подозрительные аккаунты матча {match_id}",
+                        callback_data=f"{CB_SUS_MATCH_PREFIX}{match_id}",
+                    )
+                ]
+            )
+        if buttons:
+            await callback.message.answer(
+                "Выбери матч для проверки участников:",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            )
+
+
+async def on_suspicious_match_callback(callback: CallbackQuery) -> None:
+    data = callback.data or ""
+    if not data.startswith(CB_SUS_MATCH_PREFIX):
+        await callback.answer()
+        return
+    match_id_raw = data[len(CB_SUS_MATCH_PREFIX) :]
+    try:
+        match_id = int(match_id_raw)
+    except Exception:
+        await callback.answer("Некорректный ID матча", show_alert=True)
+        return
+
+    await callback.answer("Проверяю игроков матча…")
+    od = OpenDotaClient(api_key=SETTINGS.opendota_api_key, timeout_s=SETTINGS.http_timeout_s)
+    try:
+        match = await od.get_match(match_id)
+        players = match.get("players")
+        if not isinstance(players, list) or not players:
+            raise RuntimeError("empty players")
+
+        now_ts = int(time())
+        suspicious: list[tuple[float, int, str, str, int]] = []
+        for p in players:
+            if not isinstance(p, dict):
+                continue
+            account_id = p.get("account_id")
+            if not isinstance(account_id, int) or account_id <= 0:
+                continue
+            persona = p.get("personaname")
+            name = persona if isinstance(persona, str) and persona.strip() else f"Player {account_id}"
+            hero_id = p.get("hero_id")
+            hero_name = f"Hero#{hero_id}" if isinstance(hero_id, int) else "Unknown hero"
+            try:
+                smurf_score, label, matches30 = await _analyze_account_smurf_score(od, account_id, now_ts=now_ts)
+            except Exception:
+                continue
+            if smurf_score >= 0.45:
+                suspicious.append((smurf_score, account_id, name, hero_name, matches30))
+    except Exception:
+        if callback.message is not None:
+            await callback.message.answer(
+                "Не удалось получить список подозрительных аккаунтов для этого матча. Попробуйте позже.",
+                parse_mode=ParseMode.HTML,
+            )
+        await od.aclose()
+        return
+    finally:
+        await od.aclose()
+
+    if callback.message is None:
+        return
+
+    if not suspicious:
+        await callback.message.answer(
+            f"<b>Матч {match_id}</b>\nПодозрительных аккаунтов не найдено по текущим эвристикам.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    suspicious.sort(key=lambda x: x[0], reverse=True)
+    lines: list[str] = [f"<b>Подозрительные аккаунты в матче {match_id}</b>"]
+    for score, account_id, name, hero_name, matches30 in suspicious[:10]:
+        lines.append(
+            f"\n- <b>{name}</b> (<code>{account_id}</code>)\n"
+            f"  герой: {hero_name}\n"
+            f"  смурф-скор: <b>{_score_label(score)}</b> ({score:.2f})\n"
+            f"  матчей за 30д: {matches30}"
+        )
+    await callback.message.answer("\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
 async def cmd_confirm_smurf_100(message: Message, command: CommandObject) -> None:
@@ -606,6 +862,8 @@ async def main() -> None:
     dp.message.register(cmd_analyze, F.text.startswith("/analyze"))
     dp.message.register(cmd_confirm_smurf_100, Command("confirm_smurf_100"))
     dp.message.register(cmd_confirm_smurf_100, F.text.startswith("/confirm_smurf_100"))
+    dp.callback_query.register(on_last_matches_callback, F.data.startswith(CB_LAST_MATCHES_PREFIX))
+    dp.callback_query.register(on_suspicious_match_callback, F.data.startswith(CB_SUS_MATCH_PREFIX))
 
     await dp.start_polling(bot)
 
