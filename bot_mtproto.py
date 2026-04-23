@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 
 from telethon import TelegramClient, events
 from telethon.network.connection.tcpmtproxy import ConnectionTcpMTProxyRandomizedIntermediate
 
-from bot import analyze_player, build_match_info_report
+from bot import analyze_player, build_donation_message_html, build_match_info_report
 from config import SETTINGS
+from rendering.schemas import AnalyzeResult
 from utils.parse_ids import parse_match_id, parse_player_id
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -15,14 +17,20 @@ logger = logging.getLogger("dota_profile_bot.mtproto")
 
 
 def _help_text() -> str:
-    return (
-        "Пришлите команду:\n"
-        "/analyze <steamid64 | account_id | ссылка>\n"
-        "/match <match_id | ссылка на матч OpenDota/Dotabuff>\n\n"
-        "Пример:\n"
-        "/analyze 76561198xxxxxxxxx\n"
-        "/match https://www.opendota.com/matches/7890123456"
-    )
+    lines = [
+        "Пришлите команду:",
+        "/analyze <steamid64 | account_id | ссылка>",
+        "/match <match_id | ссылка на матч OpenDota/Dotabuff>",
+        "/donate — реквизиты для поддержки бота",
+        "",
+        "Пример:",
+        "/analyze 76561198xxxxxxxxx",
+        "/match https://www.opendota.com/matches/7890123456",
+    ]
+    card = (SETTINGS.donation_card or "").strip()
+    if card:
+        lines.extend(["", f"Номер карты: {card}"])
+    return "\n".join(lines)
 
 
 def _extract_arg(text: str, command: str) -> str:
@@ -81,15 +89,24 @@ async def main() -> None:
 
         status = await event.respond("Собираю данные и считаю статистику…")
         try:
-            report = await analyze_player(pid)
+            res = await analyze_player(pid)
         except Exception as e:
             logger.exception("Analyze failed for account_id=%s", pid.account_id)
             msg = f"Ошибка при анализе:\n{type(e).__name__}: {str(e)[:220]}"
             await status.edit(msg)
             return
 
-        # Telethon supports html parse mode
-        await status.edit(report, parse_mode="html")
+        report = res.html if isinstance(res, AnalyzeResult) else str(res)
+        png = res.card_png if isinstance(res, AnalyzeResult) else None
+        if png:
+            await status.delete()
+            await event.client.send_file(
+                event.chat_id,
+                file=io.BytesIO(png),
+                caption="SmurfChekBot — отчёт на изображении.",
+            )
+        else:
+            await status.edit(report, parse_mode="html")
 
     @client.on(events.NewMessage(pattern=r"^/match(?:\s+.+)?$"))
     async def on_match(event: events.NewMessage.Event) -> None:
@@ -121,6 +138,10 @@ async def main() -> None:
             return
 
         await status.edit(report, parse_mode="html")
+
+    @client.on(events.NewMessage(pattern=r"^/donate$"))
+    async def on_donate(event: events.NewMessage.Event) -> None:
+        await event.respond(build_donation_message_html(), parse_mode="html")
 
     await client.run_until_disconnected()
 

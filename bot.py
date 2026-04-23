@@ -4,6 +4,7 @@ import asyncio
 import html
 import logging
 from datetime import datetime
+from pathlib import Path
 from time import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -16,7 +17,16 @@ from aiogram.enums.parse_mode import ParseMode
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+)
 
 from analysis.learning import SmurfSample, adaptive_smurf_bonus, avg_kda, register_confirmed_smurf
 from analysis.metrics import PeriodStats, compute_period_stats
@@ -26,6 +36,8 @@ from dota.dotabuff_client import DotabuffClient
 from dota.opendota_client import OpenDotaClient
 from dota.steam_client import SteamClient
 from dota.stratz_client import StratzClient
+from rendering.analyze_card import render_analyze_card
+from rendering.schemas import AnalyzeResult
 from utils.parse_ids import ParsedPlayerId, parse_match_id, parse_player_id
 
 
@@ -34,6 +46,9 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger("dota_profile_bot")
+
+_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+WELCOME_BANNER_PATH = _ASSETS_DIR / "welcome_banner.png"
 
 _OD_NET_EXC = (
     httpx.TimeoutException,
@@ -223,7 +238,7 @@ def _wl_to_wr(wl: dict) -> tuple[int, int, float]:
     return w, g, wr
 
 
-async def analyze_player(pid: ParsedPlayerId) -> str:
+async def analyze_player(pid: ParsedPlayerId) -> AnalyzeResult:
     now_ts = int(time())
     outbound_proxy = SETTINGS.https_proxy or SETTINGS.http_proxy
     od = OpenDotaClient(api_key=SETTINGS.opendota_api_key, timeout_s=SETTINGS.http_timeout_s)
@@ -290,7 +305,7 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
                     steam_level = None
 
             lines: list[str] = []
-            lines.append("<b>Dota2 анализ профиля</b>")
+            lines.append("🛡 <b>Dota2 — анализ профиля</b>")
             lines.append(f"<b>account_id</b>: <code>{pid.account_id}</code>")
             if pid.steamid64:
                 lines.append(f"<b>steamid64</b>: <code>{pid.steamid64}</code>")
@@ -301,8 +316,8 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
                 if created:
                     lines.append(f"<b>Steam created</b>: {created}")
             lines.append("")
-            lines.append("<b>OpenDota сейчас недоступен (ошибка сети)</b>")
-            lines.append("<b>Данные по источникам</b>")
+            lines.append("📴 <b>OpenDota сейчас недоступен</b> (ошибка сети)")
+            lines.append("📡 <b>Данные по источникам</b>")
             lines.append("- OpenDota: недоступен")
             lines.append(f"- STRATZ: {_fmt_source_matches_wr(stratz_summary.matches if stratz_summary else None, stratz_summary.winrate if stratz_summary else None)}")
             lines.append(f"- Dotabuff: {_fmt_source_matches_wr(dotabuff_summary.matches if dotabuff_summary else None, dotabuff_summary.winrate if dotabuff_summary else None)}")
@@ -315,7 +330,7 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
                     steam_parts.append(f"created: {created}")
                 lines.append(f"- Steam: {', '.join(steam_parts) if steam_parts else 'нет данных'}")
             lines.append("Попробуйте ещё раз через минуту или с VPN/другой сетью.")
-            return "\n".join(lines)
+            return AnalyzeResult(html="\n".join(lines), card_png=None)
 
         player = player_r
         matches90 = m90_r if isinstance(m90_r, list) else []
@@ -409,9 +424,9 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
             title = steam_profile.personaname
 
         lines: list[str] = []
-        lines.append("<b>Dota2 анализ профиля</b>")
+        lines.append("🛡 <b>Dota2 — анализ профиля</b>")
         if title:
-            lines.append(f"<b>Ник</b>: {title}")
+            lines.append(f"<b>Ник</b>: {html.escape(str(title))}")
         lines.append(f"<b>account_id</b>: <code>{pid.account_id}</code>")
         if pid.steamid64:
             lines.append(f"<b>steamid64</b>: <code>{pid.steamid64}</code>")
@@ -429,7 +444,7 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
             lines.append(f"<b>Leaderboard</b>: {player.leaderboard_rank}")
 
         lines.append("")
-        lines.append("<b>Данные по источникам</b>")
+        lines.append("📡 <b>Данные по источникам</b>")
         lines.append(f"- OpenDota: матчей: {g_total}, WR: {_pct(wr_total)}")
         lines.append(
             f"- STRATZ: {_fmt_source_matches_wr(stratz_summary.matches if stratz_summary else None, stratz_summary.winrate if stratz_summary else None)}"
@@ -446,12 +461,12 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
         lines.append(f"- Steam: {', '.join(steam_parts) if steam_parts else 'нет данных'}")
 
         lines.append("")
-        lines.append("<b>Активность</b>")
+        lines.append("📈 <b>Активность</b>")
         lines.append(f"- 30д: {p30.matches} матчей (~{p30.matches_per_day:.2f}/день)")
         lines.append(f"- 90д: {p90.matches} матчей (~{p90.matches_per_day:.2f}/день)")
 
         lines.append("")
-        lines.append("<b>Винрейт</b>")
+        lines.append("📊 <b>Винрейт</b>")
         lines.append(f"- общий: {_pct(wr_total)} ({w_total}/{g_total})")
         lines.append(f"- 30д: {_pct(wr30)} ({w30}/{g30})")
         lines.append(f"- 90д: {_pct(wr90)} ({w90}/{g90})")
@@ -459,7 +474,7 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
             lines.append(f"- пред.90д (120→30): {_pct(p_before.winrate)} ({p_before.wins}/{p_before.matches})")
 
         lines.append("")
-        lines.append("<b>Герои (топ)</b>")
+        lines.append("🎭 <b>Герои (топ)</b>")
         lines.append("<b>Винрейт на героях за период</b>")
         lines.append(f"- 30д: {_format_top_heroes(p30, hero_map)}")
         lines.append(f"- 90д: {_format_top_heroes(p90, hero_map)}")
@@ -469,7 +484,7 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
             lines.append(f"<b>Пауза перед последней активностью</b>: ~{inactivity_days:.0f} дней")
 
         lines.append("")
-        lines.append("<b>Подозрительность</b>")
+        lines.append("⚠️ <b>Подозрительность</b>")
         lines.append(f"- Смурф: <b>{_score_label(smurf_score)}</b> ({smurf_score:.2f})")
         reasons_smurf = list(susp.reasons_smurf)
         if adaptive_reason:
@@ -487,15 +502,38 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
                 lines.append(f"  · {r}")
 
         lines.append("")
-        lines.append("<i>Важно: это эвристики по публичной статистике, не “вердикт”.</i>")
+        lines.append("💡 <i>Важно: это эвристики по публичной статистике, не “вердикт”.</i>")
         lines.append("")
-        lines.append("<b>Поучаствовать в разработке</b>")
+        lines.append("🧪 <b>Поучаствовать в разработке</b>")
         lines.append(
             "Если вы на 100% уверены, что это смурф, отправьте:\n"
             "<code>/confirm_smurf_100 &lt;id или ссылка&gt;</code>"
         )
         lines.append("Отправляйте только при полной уверенности: эти кейсы участвуют в калибровке алгоритма.")
-        return "\n".join(lines)
+        report_html = "\n".join(lines)
+
+        avatar_bytes: bytes | None = None
+        if steam_profile and steam_profile.avatarfull and isinstance(steam_profile.avatarfull, str):
+            try:
+                async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as h:
+                    r = await h.get(steam_profile.avatarfull)
+                    if r.status_code == 200 and r.content:
+                        avatar_bytes = r.content
+            except Exception:
+                avatar_bytes = None
+
+        card_png = render_analyze_card(
+            html_lines=lines,
+            nickname=str(title).strip() if title else None,
+            account_id=pid.account_id,
+            steamid64=pid.steamid64,
+            steam_level=steam_level,
+            steam_created=_fmt_ts(steam_profile.timecreated) if steam_profile and steam_profile.timecreated else None,
+            rank_tier=player.rank_tier if isinstance(player.rank_tier, int) else None,
+            leaderboard_rank=player.leaderboard_rank if isinstance(player.leaderboard_rank, int) else None,
+            avatar_png=avatar_bytes,
+        )
+        return AnalyzeResult(html=report_html, card_png=card_png)
     finally:
         await od.aclose()
         if steam is not None:
@@ -524,11 +562,11 @@ async def build_last_matches_report(account_id: int) -> str:
 
     if not matches:
         return (
-            "<b>Последние 3 игры</b>\n"
+            "🕹 <b>Последние 3 игры</b>\n"
             "Не удалось получить матчи по этому профилю (возможно, профиль закрыт или нет свежих игр)."
         )
 
-    lines: list[str] = [f"<b>Последние 3 игры</b> (<code>{account_id}</code>)"]
+    lines: list[str] = [f"🕹 <b>Последние 3 игры</b> (<code>{account_id}</code>)"]
     for idx, m in enumerate(matches[:3], start=1):
         hero_id = m.get("hero_id") if isinstance(m.get("hero_id"), int) else -1
         hero = _hero_name(hero_map, hero_id) if hero_id != -1 else "—"
@@ -569,11 +607,11 @@ async def build_match_info_report(match_id: int) -> str:
         await od.aclose()
 
     if not match:
-        return "<b>Матч</b>: данные не получены (пустой ответ OpenDota)."
+        return "🎮 <b>Матч</b>: данные не получены (пустой ответ OpenDota)."
 
     players_raw = match.get("players")
     if not isinstance(players_raw, list) or not players_raw:
-        return f"<b>Матч <code>{match_id}</code></b>\nНе удалось загрузить состав игроков (матч не найден или скрыт)."
+        return f"🎮 <b>Матч <code>{match_id}</code></b>\nНе удалось загрузить состав игроков (матч не найден или скрыт)."
 
     duration = match.get("duration")
     start_ts = match.get("start_time")
@@ -592,7 +630,7 @@ async def build_match_info_report(match_id: int) -> str:
 
     date_s = _fmt_ts(start_ts) if isinstance(start_ts, int) else None
     lines: list[str] = [
-        f"<b>Матч</b> <code>{match_id}</code>",
+        f"🎮 <b>Матч</b> <code>{match_id}</code>",
         f"<b>Дата</b>: {date_s or '—'}",
         f"<b>Длительность</b>: {_format_duration(duration if isinstance(duration, int) else None)}",
         f"<b>Исход</b>: {winner}",
@@ -634,7 +672,7 @@ async def build_match_info_report(match_id: int) -> str:
         gpm_s = f"{gpm}" if isinstance(gpm, int) and gpm > 0 else "—"
         return f"· <b>{side}</b> {hero} | {nick} | {acc_s} | KDA {k}/{da}/{a} | GPM {gpm_s}"
 
-    lines.append("<b>Игроки</b>")
+    lines.append("⚔️ <b>Игроки</b>")
     for p in players:
         lines.append(row(p))
 
@@ -701,21 +739,72 @@ async def _analyze_account_smurf_score(
     return smurf_score, boost_score, bought_score, p30.matches
 
 
+def build_donation_message_html() -> str:
+    lines = [
+        "💝 <b>Поддержать развитие бота</b>",
+        "Спасибо за поддержку проекта! Это помогает оплачивать сервер и улучшать функционал.",
+    ]
+    if SETTINGS.donation_text:
+        lines.append("")
+        lines.append(SETTINGS.donation_text)
+    card = (SETTINGS.donation_card or "").strip()
+    if card:
+        lines.append("")
+        lines.append(f"<b>Номер карты для перевода</b>: <code>{html.escape(card)}</code>")
+    if SETTINGS.donation_url:
+        lines.append("")
+        lines.append(f"Ссылка для доната: {SETTINGS.donation_url}")
+    if not SETTINGS.donation_text and not SETTINGS.donation_url and not card:
+        lines.append("")
+        lines.append("Реквизиты пока не настроены. Напишите администратору бота.")
+    return "\n".join(lines)
+
+
+async def reply_donation_details(message: Message) -> None:
+    await message.answer(
+        build_donation_message_html(),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=MAIN_MENU,
+    )
+
+
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(
+    if WELCOME_BANNER_PATH.is_file():
+        await message.answer_photo(
+            photo=FSInputFile(WELCOME_BANNER_PATH),
+            caption="🛡 <b>SmurfChekBot</b> — смурфы, аккбаеры, матчи и донат кнопками ниже.",
+            parse_mode=ParseMode.HTML,
+        )
+    parts = [
         "Пришлите команду:\n"
         "<code>/analyze &lt;steamid64 | account_id | ссылка&gt;</code>\n"
-        "<code>/match &lt;match_id | ссылка на матч&gt;</code> — сводка по матчу\n\n"
+        "<code>/match &lt;match_id | ссылка на матч&gt;</code> — сводка по матчу\n"
+        "<code>/donate</code> — реквизиты для поддержки бота\n\n"
         "Если вы 100% уверены, что профиль смурф:\n"
         "<code>/confirm_smurf_100 &lt;id или ссылка&gt;</code>\n\n"
         "Пример:\n"
         "<code>/analyze 76561198xxxxxxxxx</code>\n"
         "<code>/match https://www.opendota.com/matches/7890123456</code>\n\n"
         "Или просто используйте кнопки ниже 👇",
+    ]
+    card = (SETTINGS.donation_card or "").strip()
+    if card or SETTINGS.donation_text or SETTINGS.donation_url:
+        parts.append("")
+        parts.append("<b>Поддержка</b>")
+        parts.append("Кнопка «Пожертвовать на развитие» или команда <code>/donate</code>.")
+        if card:
+            parts.append(f"<b>Номер карты</b>: <code>{html.escape(card)}</code>")
+    await message.answer(
+        "\n".join(parts),
         parse_mode=ParseMode.HTML,
         reply_markup=MAIN_MENU,
     )
+
+
+async def cmd_donate(message: Message) -> None:
+    await reply_donation_details(message)
 
 
 async def cmd_analyze(message: Message, command: CommandObject) -> None:
@@ -731,7 +820,7 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
 
     msg = await message.answer("Собираю данные и считаю статистику…", parse_mode=ParseMode.HTML)
     try:
-        report = await analyze_player(pid)
+        res = await analyze_player(pid)
     except Exception as e:
         logger.exception("Analyze failed for account_id=%s", pid.account_id)
         short = (str(e) or "").strip()
@@ -746,6 +835,7 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
         )
         return
 
+    report = res.html
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -756,12 +846,21 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
             ]
         ]
     )
-    await msg.edit_text(
-        report,
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-        reply_markup=keyboard,
-    )
+    if res.card_png:
+        await msg.delete()
+        await message.answer_photo(
+            photo=BufferedInputFile(res.card_png, filename="smurfcheck_report.png"),
+            caption="<b>SmurfChekBot</b> — отчёт на изображении.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+    else:
+        await msg.edit_text(
+            report,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+            reply_markup=keyboard,
+        )
 
 
 async def cmd_match(message: Message, command: CommandObject) -> None:
@@ -942,13 +1041,13 @@ async def on_suspicious_match_callback(callback: CallbackQuery) -> None:
 
     if not suspicious:
         await callback.message.answer(
-            f"<b>Матч {match_id}</b>\nПодозрительных аккаунтов не найдено по текущим эвристикам.",
+            f"🎮 <b>Матч {match_id}</b>\n🔍 Подозрительных аккаунтов не найдено по текущим эвристикам.",
             parse_mode=ParseMode.HTML,
         )
         return
 
     suspicious.sort(key=lambda x: x[0], reverse=True)
-    lines: list[str] = [f"<b>Подозрительные аккаунты в матче {match_id}</b>"]
+    lines: list[str] = [f"🔎 <b>Подозрительные аккаунты в матче {match_id}</b>"]
     for _primary, account_id, name, hero_name, matches30, smurf_score, boost_score, bought_score in suspicious[:10]:
         lines.append(
             f"\n- <b>{name}</b> (<code>{account_id}</code>)\n"
@@ -1044,30 +1143,7 @@ async def on_match_button(message: Message, state: FSMContext) -> None:
 
 
 async def on_donate_button(message: Message) -> None:
-    lines = [
-        "<b>Поддержать развитие бота</b>",
-        "Спасибо за поддержку проекта! Это помогает оплачивать сервер и улучшать функционал.",
-    ]
-    if SETTINGS.donation_text:
-        lines.append("")
-        lines.append(SETTINGS.donation_text)
-    card = (SETTINGS.donation_card or "").strip()
-    if card:
-        lines.append("")
-        lines.append(f"<b>Номер карты</b>: <code>{html.escape(card)}</code>")
-    if SETTINGS.donation_url:
-        lines.append("")
-        lines.append(f"Ссылка для доната: {SETTINGS.donation_url}")
-    if not SETTINGS.donation_text and not SETTINGS.donation_url and not card:
-        lines.append("")
-        lines.append("Реквизиты пока не настроены. Напишите администратору бота.")
-
-    await message.answer(
-        "\n".join(lines),
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-        reply_markup=MAIN_MENU,
-    )
+    await reply_donation_details(message)
 
 
 async def on_cancel_button(message: Message, state: FSMContext) -> None:
@@ -1117,6 +1193,7 @@ async def main() -> None:
     dp.message.outer_middleware(IncomingMessageLoggingMiddleware())
 
     dp.message.register(cmd_start, Command("start"))
+    dp.message.register(cmd_donate, Command("donate"))
     dp.message.register(on_cancel_button, F.text == BTN_CANCEL)
     dp.message.register(on_analyze_button, F.text == BTN_ANALYZE)
     dp.message.register(on_match_button, F.text == BTN_MATCH)
