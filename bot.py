@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import traceback
 from datetime import datetime
 from time import time
 from collections.abc import Awaitable, Callable
@@ -13,6 +12,9 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums.parse_mode import ParseMode
 from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from aiogram.types import Message
 
 from analysis.learning import SmurfSample, adaptive_smurf_bonus, avg_kda, register_confirmed_smurf
@@ -31,6 +33,26 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger("dota_profile_bot")
+
+
+BTN_ANALYZE = "Проверить профиль"
+BTN_CONFIRM_SMURF = "Подтвердить смурфа (100%)"
+BTN_CANCEL = "Отмена"
+
+
+class UserInputState(StatesGroup):
+    waiting_analyze_target = State()
+    waiting_confirm_smurf_target = State()
+
+
+MAIN_MENU = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=BTN_ANALYZE)],
+        [KeyboardButton(text=BTN_CONFIRM_SMURF)],
+        [KeyboardButton(text=BTN_CANCEL)],
+    ],
+    resize_keyboard=True,
+)
 
 
 class IncomingMessageLoggingMiddleware(BaseMiddleware):
@@ -392,15 +414,18 @@ async def analyze_player(pid: ParsedPlayerId) -> str:
         await dotabuff.aclose()
 
 
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
     await message.answer(
         "Пришлите команду:\n"
         "<code>/analyze &lt;steamid64 | account_id | ссылка&gt;</code>\n\n"
         "Если вы 100% уверены, что профиль смурф:\n"
         "<code>/confirm_smurf_100 &lt;id или ссылка&gt;</code>\n\n"
         "Пример:\n"
-        "<code>/analyze 76561198xxxxxxxxx</code>",
+        "<code>/analyze 76561198xxxxxxxxx</code>\n\n"
+        "Или просто используйте кнопки ниже 👇",
         parse_mode=ParseMode.HTML,
+        reply_markup=MAIN_MENU,
     )
 
 
@@ -490,6 +515,51 @@ async def cmd_confirm_smurf_100(message: Message, command: CommandObject) -> Non
     )
 
 
+async def on_analyze_button(message: Message, state: FSMContext) -> None:
+    await state.set_state(UserInputState.waiting_analyze_target)
+    await message.answer(
+        "Пришли steamid64 / account_id / ссылку на профиль Dotabuff для анализа.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=MAIN_MENU,
+    )
+
+
+async def on_confirm_button(message: Message, state: FSMContext) -> None:
+    await state.set_state(UserInputState.waiting_confirm_smurf_target)
+    await message.answer(
+        "Пришли steamid64 / account_id / ссылку на профиль, который ты подтверждаешь как смурф.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=MAIN_MENU,
+    )
+
+
+async def on_cancel_button(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "Действие отменено. Выбери следующий шаг кнопками ниже.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=MAIN_MENU,
+    )
+
+
+async def on_analyze_target_input(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пришли id или ссылку текстом.")
+        return
+    await state.clear()
+    await cmd_analyze(message, CommandObject(prefix="/", command="analyze", args=text))
+
+
+async def on_confirm_target_input(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пришли id или ссылку текстом.")
+        return
+    await state.clear()
+    await cmd_confirm_smurf_100(message, CommandObject(prefix="/", command="confirm_smurf_100", args=text))
+
+
 async def main() -> None:
     session = AiohttpSession(proxy=SETTINGS.telegram_proxy) if SETTINGS.telegram_proxy else AiohttpSession()
     bot = Bot(
@@ -501,6 +571,11 @@ async def main() -> None:
     dp.message.outer_middleware(IncomingMessageLoggingMiddleware())
 
     dp.message.register(cmd_start, Command("start"))
+    dp.message.register(on_cancel_button, F.text == BTN_CANCEL)
+    dp.message.register(on_analyze_button, F.text == BTN_ANALYZE)
+    dp.message.register(on_confirm_button, F.text == BTN_CONFIRM_SMURF)
+    dp.message.register(on_analyze_target_input, UserInputState.waiting_analyze_target, F.text)
+    dp.message.register(on_confirm_target_input, UserInputState.waiting_confirm_smurf_target, F.text)
     dp.message.register(cmd_analyze, Command("analyze"))
     dp.message.register(cmd_analyze, F.text.startswith("/analyze"))
     dp.message.register(cmd_confirm_smurf_100, Command("confirm_smurf_100"))
