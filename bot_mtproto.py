@@ -6,9 +6,9 @@ import logging
 from telethon import TelegramClient, events
 from telethon.network.connection.tcpmtproxy import ConnectionTcpMTProxyRandomizedIntermediate
 
-from bot import analyze_player
+from bot import analyze_player, build_match_info_report
 from config import SETTINGS
-from utils.parse_ids import parse_player_id
+from utils.parse_ids import parse_match_id, parse_player_id
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("dota_profile_bot.mtproto")
@@ -17,9 +17,11 @@ logger = logging.getLogger("dota_profile_bot.mtproto")
 def _help_text() -> str:
     return (
         "Пришлите команду:\n"
-        "/analyze <steamid64 | account_id | ссылка>\n\n"
+        "/analyze <steamid64 | account_id | ссылка>\n"
+        "/match <match_id | ссылка на матч OpenDota/Dotabuff>\n\n"
         "Пример:\n"
-        "/analyze 76561198xxxxxxxxx"
+        "/analyze 76561198xxxxxxxxx\n"
+        "/match https://www.opendota.com/matches/7890123456"
     )
 
 
@@ -87,6 +89,37 @@ async def main() -> None:
             return
 
         # Telethon supports html parse mode
+        await status.edit(report, parse_mode="html")
+
+    @client.on(events.NewMessage(pattern=r"^/match(?:\s+.+)?$"))
+    async def on_match(event: events.NewMessage.Event) -> None:
+        arg = _extract_arg(event.raw_text, "/match")
+        if not arg:
+            await event.respond(
+                "Укажи match_id или ссылку на матч.\n"
+                "Пример: /match 7890123456\n"
+                "или /match https://www.dotabuff.com/matches/7890123456"
+            )
+            return
+
+        try:
+            match_id = parse_match_id(arg)
+        except Exception as e:
+            hint = (str(e) or "").strip()
+            extra = f"\n{hint}" if hint else ""
+            await event.respond(
+                "Не смог распознать матч. Пришли числовой match_id или ссылку с /matches/...." + extra
+            )
+            return
+
+        status = await event.respond("Загружаю данные матча…")
+        try:
+            report = await build_match_info_report(match_id)
+        except Exception as e:
+            logger.exception("Match lookup failed for match_id=%s", match_id)
+            await status.edit(f"Ошибка при запросе матча:\n{type(e).__name__}: {str(e)[:220]}")
+            return
+
         await status.edit(report, parse_mode="html")
 
     await client.run_until_disconnected()

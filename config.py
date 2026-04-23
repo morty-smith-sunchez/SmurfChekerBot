@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # Optional donation block shown in bot menu
     donation_text: str | None = None
     donation_url: str | None = None
+    donation_card: str | None = None
 
     def require_telegram_token(self) -> str:
         if not self.telegram_bot_token:

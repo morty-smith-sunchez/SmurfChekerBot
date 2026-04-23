@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from datetime import datetime
 from time import time
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 import httpx
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
@@ -24,7 +26,7 @@ from dota.dotabuff_client import DotabuffClient
 from dota.opendota_client import OpenDotaClient
 from dota.steam_client import SteamClient
 from dota.stratz_client import StratzClient
-from utils.parse_ids import ParsedPlayerId, parse_player_id
+from utils.parse_ids import ParsedPlayerId, parse_match_id, parse_player_id
 
 
 logging.basicConfig(
@@ -37,6 +39,7 @@ logger = logging.getLogger("dota_profile_bot")
 BTN_ANALYZE = "Проверить профиль"
 BTN_CONFIRM_SMURF = "Подтвердить смурфа (100%)"
 BTN_DONATE = "Пожертвовать на развитие"
+BTN_MATCH = "Инфо о матче"
 BTN_CANCEL = "Отмена"
 CB_LAST_MATCHES_PREFIX = "last_matches:"
 CB_SUS_MATCH_PREFIX = "sus_match:"
@@ -45,11 +48,13 @@ CB_SUS_MATCH_PREFIX = "sus_match:"
 class UserInputState(StatesGroup):
     waiting_analyze_target = State()
     waiting_confirm_smurf_target = State()
+    waiting_match_target = State()
 
 
 MAIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=BTN_ANALYZE)],
+        [KeyboardButton(text=BTN_MATCH)],
         [KeyboardButton(text=BTN_CONFIRM_SMURF)],
         [KeyboardButton(text=BTN_DONATE)],
         [KeyboardButton(text=BTN_CANCEL)],
@@ -121,6 +126,28 @@ def _format_duration(duration_s: int | None) -> str:
         return "—"
     minutes, seconds = divmod(duration_s, 60)
     return f"{minutes}:{seconds:02d}"
+
+
+_GAME_MODES: dict[int, str] = {
+    0: "Unknown",
+    1: "All Pick",
+    2: "Captains Mode",
+    3: "Random Draft",
+    4: "Single Draft",
+    5: "All Random",
+    11: "Mid Only",
+    12: "Least Played",
+    13: "Limited Heroes",
+    16: "Captains Draft",
+    22: "All Draft",
+    23: "Turbo",
+}
+
+
+def _game_mode_label(mode: object) -> str:
+    if isinstance(mode, int):
+        return _GAME_MODES.get(mode, f"режим {mode}")
+    return "—"
 
 
 def _extract_prev60_from_matches(matches90: list[dict], *, now_ts: int) -> list[dict]:
@@ -484,6 +511,97 @@ async def build_last_matches_report(account_id: int) -> str:
     return "\n".join(lines)
 
 
+async def build_match_info_report(match_id: int) -> str:
+    od = OpenDotaClient(api_key=SETTINGS.opendota_api_key, timeout_s=SETTINGS.http_timeout_s)
+    try:
+        hero_map: dict[int, str] = {}
+        try:
+            hero_stats = await od.get_hero_stats()
+            for h in hero_stats:
+                hid = h.get("id")
+                name = h.get("localized_name")
+                if isinstance(hid, int) and isinstance(name, str) and name:
+                    hero_map[hid] = name
+        except Exception:
+            hero_map = {}
+
+        match = await od.get_match(match_id)
+    finally:
+        await od.aclose()
+
+    if not match:
+        return "<b>Матч</b>: данные не получены (пустой ответ OpenDota)."
+
+    players_raw = match.get("players")
+    if not isinstance(players_raw, list) or not players_raw:
+        return f"<b>Матч <code>{match_id}</code></b>\nНе удалось загрузить состав игроков (матч не найден или скрыт)."
+
+    duration = match.get("duration")
+    start_ts = match.get("start_time")
+    radiant_win = match.get("radiant_win")
+    r_score = match.get("radiant_score")
+    d_score = match.get("dire_score")
+    game_mode = match.get("game_mode")
+    lobby_type = match.get("lobby_type")
+    avg_mmr = match.get("average_mmr") or match.get("mmr_average")
+
+    winner = "—"
+    if radiant_win is True:
+        winner = "Победа Radiant"
+    elif radiant_win is False:
+        winner = "Победа Dire"
+
+    date_s = _fmt_ts(start_ts) if isinstance(start_ts, int) else None
+    lines: list[str] = [
+        f"<b>Матч</b> <code>{match_id}</code>",
+        f"<b>Дата</b>: {date_s or '—'}",
+        f"<b>Длительность</b>: {_format_duration(duration if isinstance(duration, int) else None)}",
+        f"<b>Исход</b>: {winner}",
+    ]
+    if isinstance(r_score, int) and isinstance(d_score, int):
+        lines.append(f"<b>Счёт</b>: Radiant {r_score} — {d_score} Dire")
+    lines.append(f"<b>Режим</b>: {_game_mode_label(game_mode)}")
+    if lobby_type is not None:
+        lines.append(f"<b>Lobby type</b>: {lobby_type}")
+    if isinstance(avg_mmr, int) and avg_mmr > 0:
+        lines.append(f"<b>Средний MMR</b> (если есть): ~{avg_mmr}")
+    lines.append("")
+    lines.append(
+        f"<a href=\"https://www.opendota.com/matches/{match_id}\">OpenDota</a> · "
+        f"<a href=\"https://www.dotabuff.com/matches/{match_id}\">Dotabuff</a>"
+    )
+    lines.append("")
+
+    players: list[dict] = [p for p in players_raw if isinstance(p, dict)]
+    players.sort(key=lambda p: int(p.get("player_slot") or 0))
+
+    def row(p: dict) -> str:
+        slot = p.get("player_slot")
+        is_radiant = isinstance(slot, int) and slot < 128
+        side = "Radiant" if is_radiant else "Dire"
+        hid = p.get("hero_id")
+        hero = _hero_name(hero_map, int(hid)) if isinstance(hid, int) else "—"
+        k = int(p.get("kills") or 0)
+        da = int(p.get("deaths") or 0)
+        a = int(p.get("assists") or 0)
+        gpm = int(p.get("gold_per_min") or 0) if p.get("gold_per_min") is not None else None
+        acc = p.get("account_id")
+        acc_s = f"<code>{acc}</code>" if isinstance(acc, int) and acc > 0 else "аноним"
+        raw_name = p.get("personaname")
+        if isinstance(raw_name, str) and raw_name.strip():
+            nick = html.escape(raw_name.strip()[:48])
+        else:
+            nick = "—"
+        gpm_s = f"{gpm}" if isinstance(gpm, int) and gpm > 0 else "—"
+        return f"· <b>{side}</b> {hero} | {nick} | {acc_s} | KDA {k}/{da}/{a} | GPM {gpm_s}"
+
+    lines.append("<b>Игроки</b>")
+    for p in players:
+        lines.append(row(p))
+
+    return "\n".join(lines)
+
+
 async def _analyze_account_smurf_score(
     od: OpenDotaClient, account_id: int, *, now_ts: int
 ) -> tuple[float, float, float, int]:
@@ -548,11 +666,13 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         "Пришлите команду:\n"
-        "<code>/analyze &lt;steamid64 | account_id | ссылка&gt;</code>\n\n"
+        "<code>/analyze &lt;steamid64 | account_id | ссылка&gt;</code>\n"
+        "<code>/match &lt;match_id | ссылка на матч&gt;</code> — сводка по матчу\n\n"
         "Если вы 100% уверены, что профиль смурф:\n"
         "<code>/confirm_smurf_100 &lt;id или ссылка&gt;</code>\n\n"
         "Пример:\n"
-        "<code>/analyze 76561198xxxxxxxxx</code>\n\n"
+        "<code>/analyze 76561198xxxxxxxxx</code>\n"
+        "<code>/match https://www.opendota.com/matches/7890123456</code>\n\n"
         "Или просто используйте кнопки ниже 👇",
         parse_mode=ParseMode.HTML,
         reply_markup=MAIN_MENU,
@@ -602,6 +722,63 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
         reply_markup=keyboard,
+    )
+
+
+async def cmd_match(message: Message, command: CommandObject) -> None:
+    if not command.args:
+        await message.answer(
+            "Укажи <b>match_id</b> или ссылку на матч (OpenDota / Dotabuff).\n"
+            "Пример: <code>/match 7890123456</code>\n"
+            "или <code>/match https://www.dotabuff.com/matches/7890123456</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        match_id = parse_match_id(command.args)
+    except ValueError as e:
+        hint = (str(e) or "").strip()
+        extra = f"\n{hint}" if hint else ""
+        await message.answer(
+            "Не смог распознать матч. Пришли числовой match_id или ссылку с <code>/matches/...</code>."
+            f"{extra}",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    msg = await message.answer("Загружаю данные матча…", parse_mode=ParseMode.HTML)
+    try:
+        report = await build_match_info_report(match_id)
+    except Exception as e:
+        logger.exception("Match lookup failed for match_id=%s", match_id)
+        short = (str(e) or "").strip()
+        if len(short) > 180:
+            short = short[:180] + "…"
+        details = f"{type(e).__name__}: {short}" if short else type(e).__name__
+        await msg.edit_text(
+            "Ошибка при запросе матча:\n"
+            f"<code>{details}</code>\n\n"
+            "Проверь match_id или попробуйте позже.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    sus_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Подозрительные аккаунты в этом матче",
+                    callback_data=f"{CB_SUS_MATCH_PREFIX}{match_id}",
+                )
+            ]
+        ]
+    )
+    await msg.edit_text(
+        report,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=sus_keyboard,
     )
 
 
@@ -807,6 +984,15 @@ async def on_confirm_button(message: Message, state: FSMContext) -> None:
     )
 
 
+async def on_match_button(message: Message, state: FSMContext) -> None:
+    await state.set_state(UserInputState.waiting_match_target)
+    await message.answer(
+        "Пришли <b>match_id</b> или ссылку на матч (страница матча на OpenDota / Dotabuff).",
+        parse_mode=ParseMode.HTML,
+        reply_markup=MAIN_MENU,
+    )
+
+
 async def on_donate_button(message: Message) -> None:
     lines = [
         "<b>Поддержать развитие бота</b>",
@@ -815,10 +1001,14 @@ async def on_donate_button(message: Message) -> None:
     if SETTINGS.donation_text:
         lines.append("")
         lines.append(SETTINGS.donation_text)
+    card = (SETTINGS.donation_card or "").strip()
+    if card:
+        lines.append("")
+        lines.append(f"<b>Номер карты</b>: <code>{html.escape(card)}</code>")
     if SETTINGS.donation_url:
         lines.append("")
         lines.append(f"Ссылка для доната: {SETTINGS.donation_url}")
-    if not SETTINGS.donation_text and not SETTINGS.donation_url:
+    if not SETTINGS.donation_text and not SETTINGS.donation_url and not card:
         lines.append("")
         lines.append("Реквизиты пока не настроены. Напишите администратору бота.")
 
@@ -857,6 +1047,15 @@ async def on_confirm_target_input(message: Message, state: FSMContext) -> None:
     await cmd_confirm_smurf_100(message, CommandObject(prefix="/", command="confirm_smurf_100", args=text))
 
 
+async def on_match_target_input(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пришли match_id или ссылку на матч текстом.")
+        return
+    await state.clear()
+    await cmd_match(message, CommandObject(prefix="/", command="match", args=text))
+
+
 async def main() -> None:
     session = AiohttpSession(proxy=SETTINGS.telegram_proxy) if SETTINGS.telegram_proxy else AiohttpSession()
     bot = Bot(
@@ -870,12 +1069,16 @@ async def main() -> None:
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(on_cancel_button, F.text == BTN_CANCEL)
     dp.message.register(on_analyze_button, F.text == BTN_ANALYZE)
+    dp.message.register(on_match_button, F.text == BTN_MATCH)
     dp.message.register(on_confirm_button, F.text == BTN_CONFIRM_SMURF)
     dp.message.register(on_donate_button, F.text == BTN_DONATE)
     dp.message.register(on_analyze_target_input, UserInputState.waiting_analyze_target, F.text)
     dp.message.register(on_confirm_target_input, UserInputState.waiting_confirm_smurf_target, F.text)
+    dp.message.register(on_match_target_input, UserInputState.waiting_match_target, F.text)
     dp.message.register(cmd_analyze, Command("analyze"))
     dp.message.register(cmd_analyze, F.text.startswith("/analyze"))
+    dp.message.register(cmd_match, Command("match"))
+    dp.message.register(cmd_match, F.text.startswith("/match"))
     dp.message.register(cmd_confirm_smurf_100, Command("confirm_smurf_100"))
     dp.message.register(cmd_confirm_smurf_100, F.text.startswith("/confirm_smurf_100"))
     dp.callback_query.register(on_last_matches_callback, F.data.startswith(CB_LAST_MATCHES_PREFIX))
