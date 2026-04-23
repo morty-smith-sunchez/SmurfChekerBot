@@ -38,15 +38,15 @@ WRAP_MIN = 92
 WRAP_MAX = 120
 MAX_PAGES = 2
 
-_MEDAL_NAMES: dict[int, str] = {
-    1: "Рекрут",
-    2: "Страж",
-    3: "Крестоносец",
-    4: "Архонт",
-    5: "Легенда",
-    6: "Древний",
-    7: "Божество",
-    8: "Иммортал",
+_MEDAL_NAMES_EN: dict[int, str] = {
+    1: "Herald",
+    2: "Guardian",
+    3: "Crusader",
+    4: "Archon",
+    5: "Legend",
+    6: "Ancient",
+    7: "Divine",
+    8: "Immortal",
 }
 
 _MEDAL_COLORS: dict[int, tuple[int, int, int]] = {
@@ -83,21 +83,34 @@ def _filter_banner_duplicate_lines(lines: list[str]) -> list[str]:
     return out
 
 
-def _rank_label(rank_tier: int | None, leaderboard_rank: int | None) -> tuple[str, str]:
+def _rank_badge_content(rank_tier: int | None, leaderboard_rank: int | None) -> tuple[str, int, str]:
+    """English medal title, star count (0–5, drawn as dots — not Unicode ★), optional subtitle line."""
     if leaderboard_rank is not None and isinstance(leaderboard_rank, int) and leaderboard_rank > 0:
-        return ("Иммортал", f"топ-{leaderboard_rank}")
+        return ("Immortal", 0, f"Leaderboard #{leaderboard_rank}")
     if rank_tier is None or rank_tier <= 0:
-        return ("Без ранга", "")
+        return ("Unranked", 0, "")
     if rank_tier >= 80:
-        return ("Иммортал", "")
+        return ("Immortal", 0, "")
     medal = rank_tier // 10
     stars = rank_tier % 10
-    name = _MEDAL_NAMES.get(medal, f"Ранг {rank_tier}")
+    name = _MEDAL_NAMES_EN.get(medal, f"Rank {rank_tier}")
     if medal >= 8:
-        return (name, "")
-    if stars > 0:
-        return (name, "★" * min(stars, 5))
-    return (name, "")
+        return (name, 0, "")
+    n = min(int(stars), 5) if stars > 0 else 0
+    return (name, n, "")
+
+
+def format_rank_summary_en(rank_tier: int | None, leaderboard_rank: int | None) -> str:
+    """Human-readable rank for HTML (English, no Unicode star glyphs)."""
+    title, n, sub = _rank_badge_content(rank_tier, leaderboard_rank)
+    parts: list[str] = [title]
+    if n == 1:
+        parts.append("1 star")
+    elif n > 1:
+        parts.append(f"{n} stars")
+    if sub:
+        parts.append(sub)
+    return " — ".join(parts)
 
 
 def _font_paths_ordered() -> list[Path]:
@@ -190,7 +203,7 @@ def _make_rank_badge(rank_tier: int | None, leaderboard_rank: int | None) -> Ima
     w, h = 380, 88
     im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(im)
-    title, subtitle = _rank_label(rank_tier, leaderboard_rank)
+    title, n_stars, subtitle = _rank_badge_content(rank_tier, leaderboard_rank)
     medal = 0
     if rank_tier and rank_tier > 0 and rank_tier < 80:
         medal = rank_tier // 10
@@ -202,15 +215,21 @@ def _make_rank_badge(rank_tier: int | None, leaderboard_rank: int | None) -> Ima
     draw.rounded_rectangle((0, 0, w - 1, h - 1), radius=22, fill=(*fill, 235), outline=(255, 255, 255, 90), width=2)
     font_big = _load_font(30)
     font_small = _load_font(22)
-    if Pilmoji is not None:
-        with Pilmoji(im) as pj:
-            pj.text((18, 12), title, (255, 255, 255), font_big, stroke_width=1, stroke_fill=(0, 0, 0))
-            if subtitle:
-                pj.text((18, 52), subtitle, (240, 240, 255), font_small, stroke_width=1, stroke_fill=(0, 0, 0))
-    else:
-        draw.text((18, 12), title, font=font_big, fill=(255, 255, 255, 255), stroke_width=1, stroke_fill=(0, 0, 0))
-        if subtitle:
-            draw.text((18, 52), subtitle, font=font_small, fill=(240, 240, 255, 240), stroke_width=1, stroke_fill=(0, 0, 0))
+    draw.text((18, 10), title, font=font_big, fill=(255, 255, 255, 255), stroke_width=1, stroke_fill=(0, 0, 0))
+    if n_stars > 0:
+        cy, r = 57, 6
+        for i in range(n_stars):
+            cx = 24 + i * 20
+            draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(255, 220, 100), outline=(60, 45, 20), width=1)
+    elif subtitle:
+        draw.text(
+            (18, 48),
+            subtitle,
+            font=font_small,
+            fill=(248, 248, 255, 255),
+            stroke_width=1,
+            stroke_fill=(0, 0, 0),
+        )
     return im
 
 

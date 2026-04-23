@@ -67,8 +67,8 @@ def parse_player_id(text: str) -> ParsedPlayerId:
 
     if _STEAM_VANITY_URL_RE.search(s) and not _STEAM_PROFILES_URL_RE.search(s):
         raise ValueError(
-            "Ссылка на профиль вида steamcommunity.com/id/… нужно обрабатывать через бота с ключом "
-            "STEAM_API_KEY, либо пришлите ссылку …/profiles/<steamid64> или числовой steamid64."
+            "Короткая ссылка Steam (custom URL) сейчас не поддерживается в этом режиме. "
+            "Пришлите числовой steamid64 или ссылку на профиль с id в пути /profiles/…"
         )
 
     m = _DIGITS_RE.search(s)
@@ -100,8 +100,7 @@ async def parse_player_id_resolved(text: str, steam: SteamClient | None) -> Pars
     if mv and not _STEAM_PROFILES_URL_RE.search(s):
         if steam is None:
             raise ValueError(
-                "Для ссылки steamcommunity.com/id/… в .env нужен STEAM_API_KEY. "
-                "Либо пришлите ссылку steamcommunity.com/profiles/&lt;steamid64&gt; или числовой id."
+                "Короткая ссылка Steam (custom URL) недоступна. Пришлите steamid64 или ссылку на профиль с числовым id."
             )
         vanity = mv.group(1)
         sid = await steam.resolve_vanity_url(vanity)

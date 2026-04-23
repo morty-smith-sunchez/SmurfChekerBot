@@ -36,7 +36,7 @@ from dota.dotabuff_client import DotabuffClient
 from dota.opendota_client import OpenDotaClient
 from dota.steam_client import SteamClient
 from dota.stratz_client import StratzClient
-from rendering.analyze_card import render_analyze_card
+from rendering.analyze_card import format_rank_summary_en, render_analyze_card
 from rendering.schemas import AnalyzeResult
 from utils.parse_ids import ParsedPlayerId, parse_match_id, parse_player_id_resolved
 
@@ -438,10 +438,10 @@ async def analyze_player(pid: ParsedPlayerId) -> AnalyzeResult:
             if created:
                 lines.append(f"<b>Steam created</b>: {created}")
 
-        if player.rank_tier is not None:
-            lines.append(f"<b>Rank tier</b>: {player.rank_tier}")
-        if player.leaderboard_rank is not None:
-            lines.append(f"<b>Leaderboard</b>: {player.leaderboard_rank}")
+        if player.rank_tier is not None or player.leaderboard_rank is not None:
+            lines.append(
+                f"<b>Rank</b>: {html.escape(format_rank_summary_en(player.rank_tier, player.leaderboard_rank))}"
+            )
 
         lines.append("")
         lines.append("📡 <b>Данные по источникам</b>")
@@ -821,8 +821,7 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
     except ValueError as e:
         hint = (str(e) or "").strip()
         await message.answer(
-            "Не смог распознать id. Пришлите steamid64, account_id, ссылку на Dotabuff/OpenDota "
-            "или на Steam-профиль (steamcommunity.com/profiles/… или /id/… при наличии STEAM_API_KEY).\n"
+            "Не смог распознать id. Пришлите steamid64, account_id или ссылку на профиль Dotabuff, OpenDota или Steam.\n"
             + (f"<i>{html.escape(hint)}</i>" if hint else ""),
             parse_mode=ParseMode.HTML,
         )
@@ -1092,8 +1091,7 @@ async def cmd_confirm_smurf_100(message: Message, command: CommandObject) -> Non
     except ValueError as e:
         hint = (str(e) or "").strip()
         await message.answer(
-            "Не смог распознать id. Пришлите steamid64, account_id, ссылку на профиль Dotabuff/OpenDota "
-            "или на Steam (profiles/… или /id/… при наличии STEAM_API_KEY).\n"
+            "Не смог распознать id. Пришлите steamid64, account_id или ссылку на профиль Dotabuff, OpenDota или Steam.\n"
             + (f"<i>{html.escape(hint)}</i>" if hint else ""),
             parse_mode=ParseMode.HTML,
         )
@@ -1145,7 +1143,7 @@ async def cmd_confirm_smurf_100(message: Message, command: CommandObject) -> Non
 async def on_analyze_button(message: Message, state: FSMContext) -> None:
     await state.set_state(UserInputState.waiting_analyze_target)
     await message.answer(
-        "Пришли steamid64, account_id, ссылку на Dotabuff/OpenDota или на Steam-профиль (profiles/… или /id/… с STEAM_API_KEY).",
+        "Пришли steamid64, account_id или ссылку на профиль Dotabuff, OpenDota или Steam.",
         parse_mode=ParseMode.HTML,
         reply_markup=MAIN_MENU,
     )

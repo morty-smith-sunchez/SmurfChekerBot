@@ -89,8 +89,7 @@ async def main() -> None:
         except ValueError as e:
             hint = (str(e) or "").strip()
             await event.respond(
-                "Не смог распознать id. Пришлите steamid64, account_id, ссылку на Dotabuff/OpenDota "
-                "или на Steam (profiles/… или /id/… при STEAM_API_KEY).\n"
+                "Не смог распознать id. Пришлите steamid64, account_id или ссылку на Dotabuff, OpenDota или Steam.\n"
                 + (hint if hint else "")
             )
             return
