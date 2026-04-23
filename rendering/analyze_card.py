@@ -12,7 +12,9 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
 _RENDERING_DIR = Path(__file__).resolve().parent
-BANNER_PATH = ROOT / "assets" / "welcome_banner.png"
+# Welcome /start: `welcome_banner.png` (with branding). PNG reports: `report_background.png` (same look, no text).
+WELCOME_BANNER_PATH = ROOT / "assets" / "welcome_banner.png"
+REPORT_BACKGROUND_PATH = ROOT / "assets" / "report_background.png"
 # Bundled OFL Noto Sans (Latin + Cyrillic). Ship next to this module so deploys that copy only `rendering/` still find it.
 PACKAGE_SANS = _RENDERING_DIR / "fonts" / "NotoSans-Regular.ttf"
 BUNDLED_SANS = ROOT / "assets" / "fonts" / "NotoSans-Regular.ttf"
@@ -195,7 +197,7 @@ def _circle_avatar(img: Image.Image, size: int) -> Image.Image:
 
 
 def _apply_readability_scrim(im: Image.Image) -> Image.Image:
-    """Darken mid-frame where welcome_banner.png has large baked-in branding so report text stays readable."""
+    """Darken mid-frame when falling back to welcome banner that has baked-in center text."""
     im = im.convert("RGBA")
     w, h = im.size
     scrim = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -267,13 +269,15 @@ def render_analyze_card(
     leaderboard_rank: int | None,
     avatar_png: bytes | None,
 ) -> list[bytes]:
-    if not BANNER_PATH.is_file():
+    bg_file = REPORT_BACKGROUND_PATH if REPORT_BACKGROUND_PATH.is_file() else WELCOME_BANNER_PATH
+    if not bg_file.is_file():
         return []
 
     try:
         plain = _filter_banner_duplicate_lines([_strip_html_line(x) for x in html_lines])
         wrapped = _wrap_plain_text(plain)
-        banner = Image.open(BANNER_PATH).convert("RGB")
+        use_report_bg = REPORT_BACKGROUND_PATH.is_file() and bg_file == REPORT_BACKGROUND_PATH
+        banner = Image.open(bg_file).convert("RGB")
 
         font_title = _load_font(TITLE_FONT_SIZE)
         font_sub = _load_font(SUB_FONT_SIZE)
@@ -307,7 +311,8 @@ def render_analyze_card(
         for page_i, chunk in enumerate(chunks):
             y_shift = page_i * 72
             bg = _cover_background(banner, PAGE_W, PAGE_H, y_shift=y_shift)
-            bg = _apply_readability_scrim(bg)
+            if not use_report_bg:
+                bg = _apply_readability_scrim(bg)
             draw = ImageDraw.Draw(bg, "RGBA")
 
             if page_i == 0:
