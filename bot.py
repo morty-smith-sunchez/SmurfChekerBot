@@ -28,6 +28,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
+from analytics.store import fetch_recent_messages, fetch_stats, init_db, record_message
 from analysis.learning import SmurfSample, adaptive_smurf_bonus, avg_kda, register_confirmed_smurf
 from analysis.metrics import PeriodStats, compute_period_stats
 from analysis.scoring import score_suspicion
@@ -85,6 +86,10 @@ MAIN_MENU = ReplyKeyboardMarkup(
 )
 
 
+def _admin_ids() -> set[int]:
+    return SETTINGS.admin_id_set()
+
+
 class IncomingMessageLoggingMiddleware(BaseMiddleware):
     async def __call__(
         self,
@@ -105,6 +110,34 @@ class IncomingMessageLoggingMiddleware(BaseMiddleware):
             event.chat.id if event.chat else None,
             text,
         )
+        if user and event.chat:
+            raw = (event.text or event.caption or "").strip() or "<non-text>"
+            raw = raw[:4000]
+            try:
+                await asyncio.to_thread(
+                    record_message,
+                    user_id=user.id,
+                    username=user.username,
+                    chat_id=event.chat.id,
+                    text=raw,
+                )
+            except Exception:
+                logger.exception("analytics record_message failed")
+            if SETTINGS.admin_message_mirror and _admin_ids():
+                bot = data.get("bot")
+                if isinstance(bot, Bot):
+                    mirror = (
+                        f"📩 <b>chat</b> <code>{event.chat.id}</code>\n"
+                        f"<b>user</b> <code>{user.id}</code> @{html.escape(user.username or '—')}\n"
+                        f"<pre>{html.escape(raw[:3500])}</pre>"
+                    )
+                    for aid in _admin_ids():
+                        if aid == user.id:
+                            continue
+                        try:
+                            await bot.send_message(aid, mirror, parse_mode=ParseMode.HTML)
+                        except Exception:
+                            logger.debug("admin mirror to %s failed", aid, exc_info=True)
         return await handler(event, data)
 
 
@@ -1207,6 +1240,55 @@ async def on_match_target_input(message: Message, state: FSMContext) -> None:
     await cmd_match(message, CommandObject(prefix="/", command="match", args=text))
 
 
+async def cmd_admin_stats(message: Message) -> None:
+    if not message.from_user or message.from_user.id not in _admin_ids():
+        return
+    try:
+        stats = await asyncio.to_thread(fetch_stats)
+    except Exception:
+        logger.exception("fetch_stats failed")
+        await message.answer("Не удалось прочитать базу аналитики.", parse_mode=ParseMode.HTML)
+        return
+    await message.answer(
+        "<b>Аналитика</b> (локальная SQLite рядом с ботом)\n"
+        f"Уникальных пользователей: <b>{stats['total_users']}</b>\n"
+        f"Писали за последние 7 дней: <b>{stats['active_users_7d']}</b>\n"
+        f"Всего учтённых сообщений (сумма): <b>{stats['total_messages']}</b>\n"
+        f"Записей в логе за 24 часа: <b>{stats['logged_messages_24h']}</b>\n\n"
+        "<code>/admin_recent</code> — последние тексты пользователей.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def cmd_admin_recent(message: Message) -> None:
+    if not message.from_user or message.from_user.id not in _admin_ids():
+        return
+    try:
+        rows = await asyncio.to_thread(fetch_recent_messages, 30)
+    except Exception:
+        logger.exception("fetch_recent_messages failed")
+        await message.answer("Не удалось прочитать лог сообщений.", parse_mode=ParseMode.HTML)
+        return
+    if not rows:
+        await message.answer("Пока нет сохранённых сообщений.", parse_mode=ParseMode.HTML)
+        return
+    parts: list[str] = ["<b>Последние сообщения</b>"]
+    for ts, uid, un, cid, txt in rows:
+        try:
+            dt = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            dt = str(ts)
+        udisp = html.escape(un) if un else "—"
+        parts.append(
+            f"\n<code>{html.escape(dt)}</code> uid <code>{uid}</code> @{udisp} chat <code>{cid}</code>"
+        )
+        parts.append(f"<pre>{html.escape(txt[:900])}</pre>")
+    body = "\n".join(parts)
+    if len(body) > 3800:
+        body = body[:3800] + "\n…"
+    await message.answer(body, parse_mode=ParseMode.HTML)
+
+
 async def main() -> None:
     session = AiohttpSession(proxy=SETTINGS.telegram_proxy) if SETTINGS.telegram_proxy else AiohttpSession()
     bot = Bot(
@@ -1216,6 +1298,8 @@ async def main() -> None:
     )
     dp = Dispatcher()
     dp.message.outer_middleware(IncomingMessageLoggingMiddleware())
+
+    await asyncio.to_thread(init_db)
 
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_donate, Command("donate"))
@@ -1233,6 +1317,8 @@ async def main() -> None:
     dp.message.register(cmd_match, F.text.startswith("/match"))
     dp.message.register(cmd_confirm_smurf_100, Command("confirm_smurf_100"))
     dp.message.register(cmd_confirm_smurf_100, F.text.startswith("/confirm_smurf_100"))
+    dp.message.register(cmd_admin_stats, Command("admin_stats"))
+    dp.message.register(cmd_admin_recent, Command("admin_recent"))
     dp.callback_query.register(on_last_matches_callback, F.data.startswith(CB_LAST_MATCHES_PREFIX))
     dp.callback_query.register(on_suspicious_match_callback, F.data.startswith(CB_SUS_MATCH_PREFIX))
 

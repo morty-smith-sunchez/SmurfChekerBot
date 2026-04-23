@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     donation_url: str | None = None
     donation_card: str | None = None
 
+    # Comma-separated Telegram user ids (digits) who may use /admin_stats and /admin_recent
+    admin_user_ids: str | None = None
+    # If true, each user text message is also copied to admins (can be noisy)
+    admin_message_mirror: bool = False
+
     def require_telegram_token(self) -> str:
         if not self.telegram_bot_token:
             raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Create .env next to bot.py")
@@ -44,6 +49,16 @@ class Settings(BaseSettings):
         if not self.telegram_api_id or not self.telegram_api_hash:
             raise RuntimeError("TELEGRAM_API_ID/TELEGRAM_API_HASH are missing for MTProto mode")
         return int(self.telegram_api_id), self.telegram_api_hash
+
+    def admin_id_set(self) -> set[int]:
+        raw = (self.admin_user_ids or "").strip()
+        if not raw:
+            return set()
+        out: set[int] = set()
+        for p in raw.replace(" ", "").split(","):
+            if p.isdigit():
+                out.add(int(p))
+        return out
 
 
 class ScoreWeights(BaseModel):
