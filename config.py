@@ -46,7 +46,7 @@ class Settings(BaseSettings):
 
     # Кнопка под отчётом /analyze (после «3 последние игры» и опционально PROMO). Допускается t.me/+invite
     analyze_channel_url: str | None = None
-    analyze_channel_button_text: str = "Telegram-канал"
+    analyze_channel_button_text: str = "Канал разраба"
 
     # Ссылка на ваш Telegram (https://t.me/username). Показывается в /start, /privacy, /donate и /support
     support_telegram_url: str | None = None

@@ -142,7 +142,7 @@ def build_analyze_report_keyboard(account_id: int) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text=plab, url=promo)])
     ach = (SETTINGS.analyze_channel_url or "").strip()
     if ach:
-        alab = (SETTINGS.analyze_channel_button_text or "Telegram-канал").strip() or "Telegram-канал"
+        alab = (SETTINGS.analyze_channel_button_text or "Канал разраба").strip() or "Канал разраба"
         rows.append([InlineKeyboardButton(text=alab, url=ach)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
