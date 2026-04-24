@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     promo_sponsored_after_analyze_html: str | None = None
     promo_sponsored_cooldown_seconds: int = 43_200
 
+    # Кнопка под отчётом /analyze (после «3 последние игры» и опционально PROMO). Допускается t.me/+invite
+    analyze_channel_url: str | None = None
+    analyze_channel_button_text: str = "Telegram-канал"
+
+    # Ссылка на ваш Telegram (https://t.me/username). Показывается в /start, /privacy, /donate и /support
+    support_telegram_url: str | None = None
+    support_telegram_label: str = "Написать автору"
+
     # Comma-separated Telegram user ids (digits) — /admin_* и зеркало сообщений
     admin_user_ids: str | None = None
     # Логины без @ (те же /admin_*). Чисто числовые значения здесь тоже считаются user id (если перепутали с ADMIN_USER_IDS)

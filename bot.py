@@ -106,6 +106,16 @@ def main_menu_reply_markup() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def support_contact_lines() -> list[str]:
+    """Строки HTML для блока «связь с автором», если задан SUPPORT_TELEGRAM_URL."""
+    url = (SETTINGS.support_telegram_url or "").strip()
+    if not url:
+        return []
+    safe = html.escape(url, quote=True)
+    label = (SETTINGS.support_telegram_label or "Написать автору").strip() or "Написать автору"
+    return ["", f"📩 <b>Поддержка</b>: <a href=\"{safe}\">{html.escape(label)}</a>."]
+
+
 def _inline_with_channel_row(kb: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
     ch = (SETTINGS.promo_channel_url or "").strip()
     if not ch:
@@ -114,6 +124,27 @@ def _inline_with_channel_row(kb: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[*kb.inline_keyboard, [InlineKeyboardButton(text=label, url=ch)]]
     )
+
+
+def build_analyze_report_keyboard(account_id: int) -> InlineKeyboardMarkup:
+    """Инлайн-кнопки под отчётом анализа: последние игры → опционально PROMO → канал из ANALYZE_CHANNEL (последним)."""
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text="Подробно: 3 последние игры",
+                callback_data=f"{CB_LAST_MATCHES_PREFIX}{account_id}",
+            )
+        ]
+    ]
+    promo = (SETTINGS.promo_channel_url or "").strip()
+    if promo:
+        plab = (SETTINGS.promo_channel_button_text or "Наш канал").strip() or "Наш канал"
+        rows.append([InlineKeyboardButton(text=plab, url=promo)])
+    ach = (SETTINGS.analyze_channel_url or "").strip()
+    if ach:
+        alab = (SETTINGS.analyze_channel_button_text or "Telegram-канал").strip() or "Telegram-канал"
+        rows.append([InlineKeyboardButton(text=alab, url=ach)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def maybe_sponsored_after_analyze(message: Message) -> None:
@@ -850,6 +881,7 @@ def build_donation_message_html() -> str:
     if not SETTINGS.donation_text and not SETTINGS.donation_url and not card:
         lines.append("")
         lines.append("Реквизиты пока не настроены. Напишите администратору бота.")
+    lines.extend(support_contact_lines())
     return "\n".join(lines)
 
 
@@ -863,14 +895,39 @@ async def reply_donation_details(message: Message) -> None:
 
 
 async def cmd_privacy(message: Message) -> None:
-    await message.answer(
+    body = (
         "<b>Конфиденциальность</b>\n\n"
         "Бот запрашивает у публичных API (OpenDota и др.) статистику Dota 2 по тому id или ссылке, "
         "которые вы присылаете. Пароль Steam бот не запрашивает и в аккаунт не заходит.\n\n"
         "Сообщения в чате с ботом могут записываться в локальную базу на стороне владельца бота "
         "(аналитика и модерация). Это не публикуется в открытый доступ.\n\n"
-        "Оценки «смурф / буст / купленный аккаунт» — эвристики для ориентира, не официальный вердикт Valve.",
+        "Оценки «смурф / буст / купленный аккаунт» — эвристики для ориентира, не официальный вердикт Valve."
+    )
+    extra = support_contact_lines()
+    if extra:
+        body += "\n" + "\n".join(extra).lstrip()
+    await message.answer(
+        body,
         parse_mode=ParseMode.HTML,
+        reply_markup=main_menu_reply_markup(),
+    )
+
+
+async def cmd_support(message: Message) -> None:
+    url = (SETTINGS.support_telegram_url or "").strip()
+    if not url:
+        await message.answer(
+            "Контакт автора в Telegram пока не настроен. Попробуйте позже или напишите через канал проекта.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_menu_reply_markup(),
+        )
+        return
+    safe = html.escape(url, quote=True)
+    label = (SETTINGS.support_telegram_label or "Написать автору").strip() or "Написать автору"
+    await message.answer(
+        f"Если бот глючит, есть идея или вопрос — пишите: <a href=\"{safe}\">{html.escape(label)}</a>.",
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
         reply_markup=main_menu_reply_markup(),
     )
 
@@ -887,7 +944,8 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         "Пришлите команду:\n"
         "<code>/analyze &lt;steamid64 | account_id | Dotabuff/OpenDota | Steam-профиль&gt;</code>\n"
         "<code>/match &lt;match_id | ссылка на матч&gt;</code> — сводка по матчу\n"
-        "<code>/donate</code> — реквизиты для поддержки бота\n\n"
+        "<code>/donate</code> — реквизиты для поддержки бота\n"
+        "<code>/support</code> — связь с автором\n\n"
         "Если вы 100% уверены, что профиль смурф:\n"
         "<code>/confirm_smurf_100 &lt;id или ссылка&gt;</code>\n\n"
         "Пример:\n"
@@ -907,6 +965,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         parts.append(f"Новости и обновления — в <a href=\"{safe_u}\">telegram-канале</a>.")
     parts.append("")
     parts.append("<code>/privacy</code> — что бот делает с данными.")
+    parts.extend(support_contact_lines())
     card = (SETTINGS.donation_card or "").strip()
     if card or SETTINGS.donation_text or SETTINGS.donation_url:
         parts.append("")
@@ -963,18 +1022,7 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
         return
 
     report = res.html
-    keyboard = _inline_with_channel_row(
-        InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="Подробно: 3 последние игры",
-                        callback_data=f"{CB_LAST_MATCHES_PREFIX}{pid.account_id}",
-                    )
-                ]
-            ]
-        )
-    )
+    keyboard = build_analyze_report_keyboard(pid.account_id)
     if res.card_pngs:
         await msg.delete()
         n = len(res.card_pngs)
@@ -1515,6 +1563,7 @@ async def main() -> None:
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_donate, Command("donate"))
     dp.message.register(cmd_privacy, Command("privacy"))
+    dp.message.register(cmd_support, Command("support"))
     # До FSM: команды и админка — до состояний «ожидаю текст», иначе /privacy и др. уходят в FSM.
     dp.message.register(cmd_admin_stats, F.text.startswith("/admin_stats"))
     dp.message.register(cmd_admin_recent, F.text.startswith("/admin_recent"))
@@ -1560,6 +1609,7 @@ async def main() -> None:
                 BotCommand(command="match", description="Сводка по матчу"),
                 BotCommand(command="donate", description="Поддержать проект"),
                 BotCommand(command="privacy", description="Данные и конфиденциальность"),
+                BotCommand(command="support", description="Связь с автором"),
             ]
         )
     except Exception:
