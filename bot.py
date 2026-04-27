@@ -92,16 +92,24 @@ class UserInputState(StatesGroup):
 
 
 def main_menu_reply_markup() -> ReplyKeyboardMarkup:
-    ch = (SETTINGS.promo_channel_url or "").strip()
-    label = (SETTINGS.promo_channel_button_text or "Наш канал").strip() or "Наш канал"
+    promo = (SETTINGS.promo_channel_url or "").strip()
+    plab = (SETTINGS.promo_channel_button_text or "Наш канал").strip() or "Наш канал"
+    ach = (SETTINGS.analyze_channel_url or "").strip()
+    alab = (SETTINGS.analyze_channel_button_text or "Канал разраба").strip() or "Канал разраба"
     rows: list[list[KeyboardButton]] = [
         [KeyboardButton(text=BTN_ANALYZE)],
         [KeyboardButton(text=BTN_MATCH)],
         [KeyboardButton(text=BTN_CONFIRM_SMURF)],
         [KeyboardButton(text=BTN_DONATE)],
     ]
-    if ch:
-        rows.append([KeyboardButton(text=label, url=ch)])
+    # Канал в меню: PROMO; «Канал разраба» (ANALYZE) — если ссылка другая или задана только она
+    if promo and ach and promo == ach:
+        rows.append([KeyboardButton(text=plab, url=promo)])
+    else:
+        if promo:
+            rows.append([KeyboardButton(text=plab, url=promo)])
+        if ach and ach != promo:
+            rows.append([KeyboardButton(text=alab, url=ach)])
     rows.append([KeyboardButton(text=BTN_CANCEL)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -137,13 +145,17 @@ def build_analyze_report_keyboard(account_id: int) -> InlineKeyboardMarkup:
         ]
     ]
     promo = (SETTINGS.promo_channel_url or "").strip()
-    if promo:
-        plab = (SETTINGS.promo_channel_button_text or "Наш канал").strip() or "Наш канал"
-        rows.append([InlineKeyboardButton(text=plab, url=promo)])
+    plab = (SETTINGS.promo_channel_button_text or "Наш канал").strip() or "Наш канал"
     ach = (SETTINGS.analyze_channel_url or "").strip()
-    if ach:
-        alab = (SETTINGS.analyze_channel_button_text or "Канал разраба").strip() or "Канал разраба"
-        rows.append([InlineKeyboardButton(text=alab, url=ach)])
+    alab = (SETTINGS.analyze_channel_button_text or "Канал разраба").strip() or "Канал разраба"
+    # Две кнопки с одним и тем же url ломают клавиатуру в части клиентов/ответа API — пропадает и callback.
+    if promo and ach and promo == ach:
+        rows.append([InlineKeyboardButton(text=plab, url=promo)])
+    else:
+        if promo:
+            rows.append([InlineKeyboardButton(text=plab, url=promo)])
+        if ach and ach != promo:
+            rows.append([InlineKeyboardButton(text=alab, url=ach)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     promo_sponsored_after_analyze_html: str | None = None
     promo_sponsored_cooldown_seconds: int = 43_200
 
-    # Кнопка под отчётом /analyze (после «3 последние игры» и опционально PROMO). Допускается t.me/+invite
+    # Кнопка «Канал разраба» в меню (если не дублирует PROMO) и под отчётом /analyze. Допускается t.me/+invite
     analyze_channel_url: str | None = None
     analyze_channel_button_text: str = "Канал разраба"
 
