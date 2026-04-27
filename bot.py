@@ -1032,8 +1032,14 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
                 photo=BufferedInputFile(png, filename=f"smurfcheck_report_{i + 1}.png"),
                 caption="<b>SmurfChekBot</b> — отчёт на изображении." if last else None,
                 parse_mode=ParseMode.HTML,
-                reply_markup=keyboard if last else None,
+                reply_markup=None,
             )
+        # Кнопки на отдельном сообщении: так видно и при 2+ страницах, и без привязки к последнему фото.
+        await message.answer(
+            "<b>Действия</b> — кнопки ниже.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
     else:
         await msg.edit_text(
             report,

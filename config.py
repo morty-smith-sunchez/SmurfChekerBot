@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Чтобы переменные подхватывались при любом cwd (systemd, IDE), читаем .env рядом с этим файлом.
+_PROJECT_ROOT = Path(__file__).resolve().parent
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     telegram_bot_token: str | None = None
     telegram_proxy: str | None = None
