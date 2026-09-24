@@ -92,26 +92,17 @@ class UserInputState(StatesGroup):
 
 
 def main_menu_reply_markup() -> ReplyKeyboardMarkup:
-    promo = (SETTINGS.promo_channel_url or "").strip()
-    plab = (SETTINGS.promo_channel_button_text or "Наш канал").strip() or "Наш канал"
-    ach = (SETTINGS.analyze_channel_url or "").strip()
-    alab = (SETTINGS.analyze_channel_button_text or "Канал разраба").strip() or "Канал разраба"
-    rows: list[list[KeyboardButton]] = [
-        [KeyboardButton(text=BTN_ANALYZE)],
-        [KeyboardButton(text=BTN_MATCH)],
-        [KeyboardButton(text=BTN_CONFIRM_SMURF)],
-        [KeyboardButton(text=BTN_DONATE)],
-    ]
-    # Канал в меню: PROMO; «Канал разраба» (ANALYZE) — если ссылка другая или задана только она
-    if promo and ach and promo == ach:
-        rows.append([KeyboardButton(text=plab, url=promo)])
-    else:
-        if promo:
-            rows.append([KeyboardButton(text=plab, url=promo)])
-        if ach and ach != promo:
-            rows.append([KeyboardButton(text=alab, url=ach)])
-    rows.append([KeyboardButton(text=BTN_CANCEL)])
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+    """Нижнее меню. В HTTP Bot API у reply-кнопок нет поля url (в отличие от инлайн) — ссылки в build_channel_links_inline_markup."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_ANALYZE)],
+            [KeyboardButton(text=BTN_MATCH)],
+            [KeyboardButton(text=BTN_CONFIRM_SMURF)],
+            [KeyboardButton(text=BTN_DONATE)],
+            [KeyboardButton(text=BTN_CANCEL)],
+        ],
+        resize_keyboard=True,
+    )
 
 
 def support_contact_lines() -> list[str]:
@@ -124,31 +115,13 @@ def support_contact_lines() -> list[str]:
     return ["", f"📩 <b>Поддержка</b>: <a href=\"{safe}\">{html.escape(label)}</a>."]
 
 
-def _inline_with_channel_row(kb: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
-    ch = (SETTINGS.promo_channel_url or "").strip()
-    if not ch:
-        return kb
-    label = (SETTINGS.promo_channel_button_text or "Наш канал").strip() or "Наш канал"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[*kb.inline_keyboard, [InlineKeyboardButton(text=label, url=ch)]]
-    )
-
-
-def build_analyze_report_keyboard(account_id: int) -> InlineKeyboardMarkup:
-    """Инлайн-кнопки под отчётом анализа: последние игры → опционально PROMO → канал из ANALYZE_CHANNEL (последним)."""
-    rows: list[list[InlineKeyboardButton]] = [
-        [
-            InlineKeyboardButton(
-                text="Подробно: 3 последние игры",
-                callback_data=f"{CB_LAST_MATCHES_PREFIX}{account_id}",
-            )
-        ]
-    ]
+def _channel_url_button_rows() -> list[list[InlineKeyboardButton]]:
+    """PROMO + ANALYZE как инлайн url; при одинаковом URL — одна кнопка."""
     promo = (SETTINGS.promo_channel_url or "").strip()
     plab = (SETTINGS.promo_channel_button_text or "Наш канал").strip() or "Наш канал"
     ach = (SETTINGS.analyze_channel_url or "").strip()
     alab = (SETTINGS.analyze_channel_button_text or "Канал разраба").strip() or "Канал разраба"
-    # Две кнопки с одним и тем же url ломают клавиатуру в части клиентов/ответа API — пропадает и callback.
+    rows: list[list[InlineKeyboardButton]] = []
     if promo and ach and promo == ach:
         rows.append([InlineKeyboardButton(text=plab, url=promo)])
     else:
@@ -156,7 +129,34 @@ def build_analyze_report_keyboard(account_id: int) -> InlineKeyboardMarkup:
             rows.append([InlineKeyboardButton(text=plab, url=promo)])
         if ach and ach != promo:
             rows.append([InlineKeyboardButton(text=alab, url=ach)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return rows
+
+
+def build_channel_links_inline_markup() -> InlineKeyboardMarkup | None:
+    """Инлайн-ссылки на канал(ы)."""
+    rows = _channel_url_button_rows()
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+def _append_channel_url_rows(kb: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
+    extra = _channel_url_button_rows()
+    if not extra:
+        return kb
+    return InlineKeyboardMarkup(inline_keyboard=[*kb.inline_keyboard, *extra])
+
+
+def build_analyze_callback_keyboard(account_id: int) -> InlineKeyboardMarkup:
+    """Только callback (без url в той же клавиатуре) — иначе часть клиентов/ответов API теряет кнопки."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Подробно: 3 последние игры",
+                    callback_data=f"{CB_LAST_MATCHES_PREFIX}{account_id}",
+                )
+            ]
+        ]
+    )
 
 
 async def maybe_sponsored_after_analyze(message: Message) -> None:
@@ -967,6 +967,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         "Или просто используйте кнопки ниже 👇",
     ]
     promo_url = (SETTINGS.promo_channel_url or "").strip()
+    analyze_ch_url = (SETTINGS.analyze_channel_url or "").strip()
     custom_promo = (SETTINGS.promo_start_line_html or "").strip()
     if custom_promo:
         parts.append("")
@@ -975,6 +976,11 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         safe_u = html.escape(promo_url, quote=True)
         parts.append("")
         parts.append(f"Новости и обновления — в <a href=\"{safe_u}\">telegram-канале</a>.")
+    elif analyze_ch_url and not custom_promo:
+        al = (SETTINGS.analyze_channel_button_text or "Канал разраба").strip() or "Канал разраба"
+        safe_u = html.escape(analyze_ch_url, quote=True)
+        parts.append("")
+        parts.append(f"Новости и обновления — <a href=\"{safe_u}\">{html.escape(al)}</a>.")
     parts.append("")
     parts.append("<code>/privacy</code> — что бот делает с данными.")
     parts.extend(support_contact_lines())
@@ -1034,7 +1040,8 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
         return
 
     report = res.html
-    keyboard = build_analyze_report_keyboard(pid.account_id)
+    k_callback = build_analyze_callback_keyboard(pid.account_id)
+    k_channel = build_channel_links_inline_markup()
     if res.card_pngs:
         await msg.delete()
         n = len(res.card_pngs)
@@ -1050,15 +1057,17 @@ async def cmd_analyze(message: Message, command: CommandObject) -> None:
         await message.answer(
             "<b>Действия</b> — кнопки ниже.",
             parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
+            reply_markup=k_callback,
         )
     else:
         await msg.edit_text(
             report,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
-            reply_markup=keyboard,
+            reply_markup=k_callback,
         )
+    if k_channel is not None:
+        await message.answer("👇\u00a0Канал", parse_mode=ParseMode.HTML, reply_markup=k_channel)
     await maybe_sponsored_after_analyze(message)
 
 
@@ -1101,7 +1110,7 @@ async def cmd_match(message: Message, command: CommandObject) -> None:
         )
         return
 
-    sus_keyboard = _inline_with_channel_row(
+    sus_keyboard = _append_channel_url_rows(
         InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -1168,7 +1177,7 @@ async def on_last_matches_callback(callback: CallbackQuery) -> None:
             await callback.message.answer(
                 "Выбери матч для проверки участников:",
                 parse_mode=ParseMode.HTML,
-                reply_markup=_inline_with_channel_row(InlineKeyboardMarkup(inline_keyboard=buttons)),
+                reply_markup=_append_channel_url_rows(InlineKeyboardMarkup(inline_keyboard=buttons)),
             )
 
 

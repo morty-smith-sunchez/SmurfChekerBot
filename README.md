@@ -69,6 +69,35 @@ TELEGRAM_MTPROXY_SECRET=...
 python bot_mtproto.py
 ```
 
+### FastAPI (REST API)
+
+Проект также можно поднять как REST API (для сайтов, интеграций, автоматизации):
+
+```bash
+python -m pip install -r requirements.txt
+python -m uvicorn api:app --host 127.0.0.1 --port 8000
+```
+
+Эндпоинты (Swagger-документация: http://127.0.0.1:8000/docs):
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/health` | проверка живости сервиса |
+| POST | `/api/v1/analyze` | анализ профиля, JSON `{"player": "steamid64/account_id/ссылка"}` |
+| POST | `/api/v1/analyze/{player}` | то же, но id/ссылка в пути |
+| GET | `/api/v1/match/{match_id}` | сводка по матчу |
+| GET | `/api/v1/match?match=...` | сводка по матчу через query-параметр |
+
+Ответ `/api/v1/analyze` содержит `account_id`, `steamid64`, `report_html` (уже HTML с тегами Telegram) и `report_png_base64` (список PNG-карточек в base64).
+
+Пример через PowerShell/curl:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/analyze `
+  -ContentType 'application/json' `
+  -Body '{"player": "123456789"}'
+```
+
 ### Команды
 - `/start` — помощь
 - `/analyze <steamid64 | account_id | ссылка>` — анализ профиля
