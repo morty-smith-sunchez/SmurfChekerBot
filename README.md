@@ -98,6 +98,34 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/analyze `
   -Body '{"player": "123456789"}'
 ```
 
+### Структура проекта
+
+```
+dota_profile_bot/
+├── bot.py                 # Telegram-бот (aiogram): команды, отчёты, клавиатуры
+├── bot_mtproto.py         # Альтернативная версия бота (Telethon + MTProxy)
+├── api.py                 # FastAPI REST-обёртка над анализом (uvicorn)
+├── config.py              # Настройки из .env через pydantic-settings
+├── smoke_test.py          # Быстрая проверка доступности внешних API
+├── requirements.txt       # Зависимости
+├── .env.example           # Шаблон переменных окружения
+├── analysis/              # Логика анализа профиля
+│   ├── metrics.py         #   статистика за 30/90 дней (матчи, WR, герои, роли)
+│   ├── scoring.py         #   эвристики: смурф / буст / купленный аккаунт
+│   └── learning.py        #   адаптивные пороги на подтверждённых кейсах
+├── analytics/             # Локальная SQLite-аналитика (store.py)
+├── dota/                  # Клиенты внешних API
+│   ├── opendota_client.py #   OpenDota
+│   ├── steam_client.py    #   Steam Web API
+│   ├── stratz_client.py   #   STRATZ
+│   └── dotabuff_client.py #   Dotabuff (парсер публичной страницы)
+├── rendering/             # Рендер PNG-карточек отчёта (Pillow/pilmoji)
+├── utils/                 # Вспомогательные парсеры ID и ссылок (parse_ids.py)
+├── assets/                # Фоны карточек (welcome_banner, report_background) и шрифты
+├── data/                  # Локальные данные (SQLite/JSON) — не попадает в git
+└── tests/                 # Pytest-тесты (test_api.py)
+```
+
 ### Команды
 - `/start` — помощь
 - `/analyze <steamid64 | account_id | ссылка>` — анализ профиля
